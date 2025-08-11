@@ -1,5 +1,10 @@
 ## 0. Highlight
-### 0.0 Pipeline
+
+### 0.0 ROS2 Support
+**NEW**: This project now supports ROS2 Humble! See [README_ROS2.md](README_ROS2.md) for ROS2 installation and usage instructions.
+But not tested yet
+
+### 0.1 Pipeline
 <div align="center">
 <img src="doc/loc.png" width=90% />
 </div>

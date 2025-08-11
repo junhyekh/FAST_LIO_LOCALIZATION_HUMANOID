@@ -1,44 +1,85 @@
 <?xml version="1.0"?>
-<package>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<!-- =============================================================================
+     Package manifest for open3d_loc ROS2 package
+     
+     This package provides global localization for humanoid robots using:
+     - FAST-LIO for LiDAR-inertial odometry
+     - Open3D for point cloud registration against pre-built maps
+     - Kalman filtering for pose smoothing
+     - Multi-resolution registration for efficiency
+     
+     The system enables robust localization in known environments using
+     offline point cloud maps to avoid accumulated errors from long-term
+     SLAM operations.
+     ============================================================================= -->
+<package format="3">
+  <!-- ===== Package Information ===== -->
   <name>open3d_loc</name>
   <version>0.0.0</version>
 
   <description>
-    This is a modified version of LOAM which is original algorithm
-    is described in the following paper:
-    J. Zhang and S. Singh. LOAM: Lidar Odometry and Mapping in Real-time.
-      Robotics: Science and Systems Conference (RSS). Berkeley, CA, July 2014.
+    Global localization system for humanoid robots using Open3D point cloud registration.
+    
+    This package provides robust localization based on offline pointcloud maps using
+    Open3D for efficient point cloud registration. The system can handle rough initial
+    poses and provides robust localization with no accumulated errors from long-term
+    operation (unlike common SLAM approaches).
+    
+    Key features:
+    - Point cloud registration against pre-built maps
+    - Multi-resolution registration (coarse + fine) for efficiency
+    - Kalman filtering for pose smoothing
+    - Support for various LiDAR types through FAST-LIO
+    - Real-time performance with low latency
   </description>
 
+  <!-- ===== Maintainer Information ===== -->
   <maintainer email="dev@livoxtech.com">claydergc</maintainer>
 
+  <!-- ===== License Information ===== -->
   <license>BSD</license>
 
+  <!-- ===== Author Information ===== -->
   <author email="zhangji@cmu.edu">Ji Zhang</author>
   
-  <buildtool_depend>catkin</buildtool_depend>
-  <build_depend>geometry_msgs</build_depend>
-  <build_depend>nav_msgs</build_depend>
-  <build_depend>roscpp</build_depend>
-  <build_depend>rospy</build_depend>
-  <build_depend>std_msgs</build_depend>
-  <build_depend>sensor_msgs</build_depend>
-  <build_depend>tf</build_depend>
-  <build_depend>message_generation</build_depend>
+  <!-- ===== Build System Dependencies ===== -->
+  <!-- ament_cmake: ROS2 build system -->
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <!-- rosidl_default_generators: For generating ROS2 interfaces -->
+  <buildtool_depend>rosidl_default_generators</buildtool_depend>
+  
+  <!-- ===== Runtime Dependencies ===== -->
+  <!-- Core ROS2 communication -->
+  <depend>rclcpp</depend>
+  <depend>rclcpp_components</depend>
+  
+  <!-- ROS2 message types -->
+  <depend>geometry_msgs</depend>      <!-- Pose, transform, and geometry messages -->
+  <depend>nav_msgs</depend>           <!-- Odometry and navigation messages -->
+  <depend>sensor_msgs</depend>        <!-- Point cloud and sensor data messages -->
+  <depend>std_msgs</depend>           <!-- Standard message types -->
+  
+  <!-- Transform handling -->
+  <depend>tf2</depend>                <!-- Core TF2 functionality -->
+  <depend>tf2_ros</depend>            <!-- ROS2 TF2 integration -->
+  <depend>tf2_geometry_msgs</depend>  <!-- TF2 geometry message conversions -->
+  
+  <!-- Point cloud processing -->
+  <depend>pcl_ros</depend>            <!-- PCL ROS2 integration -->
+  <depend>pcl_conversions</depend>    <!-- Point cloud format conversions -->
+  
+  <!-- Linear algebra -->
+  <depend>eigen3_cmake_module</depend> <!-- Eigen3 CMake integration -->
 
-  <run_depend>geometry_msgs</run_depend>
-  <run_depend>nav_msgs</run_depend>
-  <run_depend>sensor_msgs</run_depend>
-  <run_depend>roscpp</run_depend>
-  <run_depend>rospy</run_depend>
-  <run_depend>std_msgs</run_depend>
-  <run_depend>tf</run_depend>
-  <run_depend>message_runtime</run_depend>
+  <!-- ===== Interface Runtime Dependencies ===== -->
+  <!-- Required for ROS2 interface generation -->
+  <exec_depend>rosidl_default_runtime</exec_depend>
+  <member_of_group>rosidl_interface_packages</member_of_group>
 
-  <test_depend>rostest</test_depend>
-  <test_depend>rosbag</test_depend>
-
-
+  <!-- ===== Export Configuration ===== -->
   <export>
+    <!-- Specify that this package uses ament_cmake build system -->
+    <build_type>ament_cmake</build_type>
   </export>
 </package>
