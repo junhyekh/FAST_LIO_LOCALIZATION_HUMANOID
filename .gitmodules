@@ -1,0 +1,7 @@
+[submodule "third_party/FAST_LIO_ROS2"]
+	path = third_party/FAST_LIO_ROS2
+	url = https://github.com/Ericsii/FAST_LIO_ROS2.git
+	branch = ros2
+[submodule "third_party/livox_ros_driver2"]
+	path = third_party/livox_ros_driver2
+	url = https://github.com/Livox-SDK/livox_ros_driver2.git
