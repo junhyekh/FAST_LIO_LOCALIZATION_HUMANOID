@@ -333,6 +333,10 @@ GlobalLocalization::GlobalLocalization() : Node("global_localization_node")
     this->declare_parameter("init_loc_timeout_s", 10.0);               ///< Initial localization timeout (seconds)
     this->declare_parameter<std::vector<double>>("initialpose", {});   ///< Initial pose [x y z roll pitch yaw] in degrees
     this->declare_parameter("dis_updatemap", 3.5);                     ///< Map update distance threshold
+    // Kalman filter parameters (per-axis) for baselink->map smoothing
+    this->declare_parameter<std::vector<double>>("kf_baselink2map.x", std::vector<double>{});
+    this->declare_parameter<std::vector<double>>("kf_baselink2map.y", std::vector<double>{});
+    this->declare_parameter<std::vector<double>>("kf_baselink2map.z", std::vector<double>{});
 
     // Retrieve parameter values
     path_map_ = this->get_parameter("path_map").as_string();
@@ -353,10 +357,21 @@ GlobalLocalization::GlobalLocalization() : Node("global_localization_node")
     init_loc_timeout_s_ = this->get_parameter("init_loc_timeout_s").as_double();
     dis_updatemap_ = this->get_parameter("dis_updatemap").as_double();
 
+    // Retrieve Kalman filter params if provided
+    {
+        auto vx = this->get_parameter("kf_baselink2map.x").as_double_array();
+        auto vy = this->get_parameter("kf_baselink2map.y").as_double_array();
+        auto vz = this->get_parameter("kf_baselink2map.z").as_double_array();
+        kf_param_x_.assign(vx.begin(), vx.end());
+        kf_param_y_.assign(vy.begin(), vy.end());
+        kf_param_z_.assign(vz.begin(), vz.end());
+    }
+
     // Optional initialpose from parameters
     auto iparam = this->get_parameter("initialpose").as_double_array();
     if (iparam.size() >= 6) {
         initialpose_.assign(iparam.begin(), iparam.begin() + 6);
+        mat_initialpose_.setIdentity();
         mat_initialpose_.block<3,3>(0,0) = Euler2Matrix3d(Eigen::Vector3d(initialpose_[3], initialpose_[4], initialpose_[5]));
         mat_initialpose_.block<3,1>(0,3) = Eigen::Vector3d(initialpose_[0], initialpose_[1], initialpose_[2]);
     }
@@ -412,10 +427,10 @@ GlobalLocalization::GlobalLocalization() : Node("global_localization_node")
     
     // Initialize Kalman filters for pose smoothing
     // Note: kf_param vectors need to be populated before calling KalmanFilterInit
-    kf_baselink_x_.KalmanFilterInit(kf_param_x_[0], kf_param_x_[1]);
-    kf_baselink_y_.KalmanFilterInit(kf_param_y_[0], kf_param_y_[1]);
-    kf_baselink_z_.KalmanFilterInit(kf_param_z_[0], kf_param_z_[1]);
-    kalman_filter_odom2map_.KalmanFilterInit(kalman_processVar2_, kalman_estimatedMeasVar2_);
+    // kf_baselink_x_.KalmanFilterInit(kf_param_x_[0], kf_param_x_[1]);
+    // kf_baselink_y_.KalmanFilterInit(kf_param_y_[0], kf_param_y_[1]);
+    // kf_baselink_z_.KalmanFilterInit(kf_param_z_[0], kf_param_z_[1]);
+    // kalman_filter_odom2map_.KalmanFilterInit(kalman_processVar2_, kalman_estimatedMeasVar2_);
 
     // ===== System State Initialization =====
     
@@ -477,51 +492,45 @@ void GlobalLocalization::LocalizationInitialize()
     pcd_map_ori_->PaintUniformColor({1, 0, 0});
 
     // Downsample and estimate normals
-    pcd_map_coarse_ = pcd_map_ori_->VoxelDownSample(voxelsize_coarse_);
-    pcd_map_coarse_->EstimateNormals(open3d::geometry::KDTreeSearchParamHybrid(voxelsize_coarse_ * 2, 30));
-    pcd_map_fine_ = pcd_map_ori_->VoxelDownSample(voxelsize_fine_);
-    pcd_map_fine_->EstimateNormals(open3d::geometry::KDTreeSearchParamHybrid(voxelsize_fine_ * 2, 30));
-
-    // Publish coarse map for visualization
-    sensor_msgs::msg::PointCloud2 map_msg;
-    // Convert using local helper
-    {
-        sensor_msgs::PointCloud2Modifier modifier(map_msg);
-        if (pcd_map_coarse_->HasColors()) {
-            modifier.setPointCloud2FieldsByString(2, "xyz", "rgb");
-        } else {
-            modifier.setPointCloud2FieldsByString(1, "xyz");
-        }
-        modifier.resize(pcd_map_coarse_->points_.size());
-        map_msg.header.frame_id = "map";
-        map_msg.header.stamp = this->now();
-        sensor_msgs::PointCloud2Iterator<float> it_x(map_msg, "x");
-        sensor_msgs::PointCloud2Iterator<float> it_y(map_msg, "y");
-        sensor_msgs::PointCloud2Iterator<float> it_z(map_msg, "z");
-        if (pcd_map_coarse_->HasColors()) {
-            sensor_msgs::PointCloud2Iterator<uint8_t> it_r(map_msg, "r");
-            sensor_msgs::PointCloud2Iterator<uint8_t> it_g(map_msg, "g");
-            sensor_msgs::PointCloud2Iterator<uint8_t> it_b(map_msg, "b");
-            for (size_t i = 0; i < pcd_map_coarse_->points_.size(); ++i, ++it_x, ++it_y, ++it_z, ++it_r, ++it_g, ++it_b) {
-                const auto &p = pcd_map_coarse_->points_[i];
-                const auto &c = pcd_map_coarse_->colors_[i];
-                *it_x = static_cast<float>(p(0));
-                *it_y = static_cast<float>(p(1));
-                *it_z = static_cast<float>(p(2));
-                *it_r = static_cast<uint8_t>(255 * c(0));
-                *it_g = static_cast<uint8_t>(255 * c(1));
-                *it_b = static_cast<uint8_t>(255 * c(2));
-            }
-        } else {
-            for (size_t i = 0; i < pcd_map_coarse_->points_.size(); ++i, ++it_x, ++it_y, ++it_z) {
-                const auto &p = pcd_map_coarse_->points_[i];
-                *it_x = static_cast<float>(p(0));
-                *it_y = static_cast<float>(p(1));
-                *it_z = static_cast<float>(p(2));
-            }
-        }
+    // Validate and sanitize voxel sizes to avoid Open3D exceptions
+    if (voxelsize_coarse_ <= 0.0) {
+        RCLCPP_WARN(this->get_logger(), "voxelsize_coarse (%.6f) invalid; resetting to 0.10 m", voxelsize_coarse_);
+        voxelsize_coarse_ = 0.10;
     }
-    pub_map_->publish(map_msg);
+    if (voxelsize_fine_ <= 0.0) {
+        RCLCPP_WARN(this->get_logger(), "voxelsize_fine (%.6f) invalid; resetting to 0.05 m", voxelsize_fine_);
+        voxelsize_fine_ = 0.05;
+    }
+    if (voxelsize_fine_ >= voxelsize_coarse_) {
+        voxelsize_fine_ = std::max(1e-3, voxelsize_coarse_ * 0.5);
+        RCLCPP_WARN(this->get_logger(), "Adjusted voxelsize_fine to %.6f (coarse=%.6f)", voxelsize_fine_, voxelsize_coarse_);
+    }
+    RCLCPP_INFO(this->get_logger(), "voxelsize_coarse: %.6f, voxelsize_fine: %.6f", voxelsize_coarse_, voxelsize_fine_);
+
+    try {
+        pcd_map_coarse_ = pcd_map_ori_->VoxelDownSample(voxelsize_coarse_);
+    } catch (const std::exception &e) {
+        RCLCPP_ERROR(this->get_logger(), "VoxelDownSample(coarse=%.6f) failed: %s. Using original map.", voxelsize_coarse_, e.what());
+        pcd_map_coarse_ = std::make_shared<open3d::geometry::PointCloud>(*pcd_map_ori_);
+    }
+    try {
+        pcd_map_coarse_->EstimateNormals(open3d::geometry::KDTreeSearchParamHybrid(voxelsize_coarse_ * 2, 30));
+    } catch (const std::exception &e) {
+        RCLCPP_WARN(this->get_logger(), "EstimateNormals(coarse) failed: %s", e.what());
+    }
+
+    try {
+        pcd_map_fine_ = pcd_map_ori_->VoxelDownSample(voxelsize_fine_);
+    } catch (const std::exception &e) {
+        RCLCPP_ERROR(this->get_logger(), "VoxelDownSample(fine=%.6f) failed: %s. Using original map.", voxelsize_fine_, e.what());
+        pcd_map_fine_ = std::make_shared<open3d::geometry::PointCloud>(*pcd_map_ori_);
+    }
+    try {
+        pcd_map_fine_->EstimateNormals(open3d::geometry::KDTreeSearchParamHybrid(voxelsize_fine_ * 2, 30));
+    } catch (const std::exception &e) {
+        RCLCPP_WARN(this->get_logger(), "EstimateNormals(fine) failed: %s", e.what());
+    }
+
 
     // Fetch static transforms
     GetTfTransformToMatrix("base_link", "imu_link", mat_imulink2baselink_);
@@ -531,6 +540,7 @@ void GlobalLocalization::LocalizationInitialize()
     auto basemotion_str = matrix4ToString(mat_baselink2motionlink_);
     RCLCPP_WARN(this->get_logger(), "imulink->baselink: %s", imubase_str.c_str());
     RCLCPP_WARN(this->get_logger(), "baselink->motion_link: %s", basemotion_str.c_str());
+
     // Optional first localization trial (robust initialization)
     if (init_loc_enable_) {
         auto map_coarse_crop = std::make_shared<open3d::geometry::PointCloud>();
@@ -589,29 +599,85 @@ void GlobalLocalization::LocalizationInitialize()
 
                 // Initial registration matrix starts from current odom->map estimate
                 Eigen::Matrix4d reg_matrix = Eigen::Matrix4d::Identity();
+                std::cout << "mat identity: " << reg_matrix << std::endl;
                 reg_matrix = mat_odom2map_;
+                // Enforce proper homogeneous form to avoid w=0 issues in Open3D Transform
+                // reg_matrix.row(3) = Eigen::Vector4d(0.0, 0.0, 0.0, 1.0);
+
+                std::cout << "mat odom2map: " << mat_odom2map_ << std::endl;
 
                 *target = *map_fine_crop;
+                sensor_msgs::msg::PointCloud2 target_msg;
+                // Convert using reusable helper
+                open3d_conversions::open3dToRos(*target, target_msg, "map");
+                target_msg.header.stamp = this->now();
+                pub_submap_->publish(target_msg);
+                
                 if (target->points_.size() > static_cast<size_t>(maxpoints_target_)) {
                     target = target->RandomDownSample(double(maxpoints_target_) / target->points_.size());
                 }
 
                 source = pcd_scan->Crop(*OBB_scan);
+                auto min_bound = source->GetMinBound();
+                auto max_bound = source->GetMaxBound();
+                std::cout << "scan min_bound: " << min_bound.transpose() << std::endl;
+                std::cout << "scan max_bound: " << max_bound.transpose() << std::endl;
+                std::cout << "scan max_bound - min_bound: " << (max_bound - min_bound).transpose() << "coef: " << (max_bound - min_bound).maxCoeff() << std::endl;
+                
+                // try {
+                //     if (voxelsize_fine_ > 0.0) {
+                //         source = source->VoxelDownSample(voxelsize_fine_);
+                //     }
+                // } catch (const std::exception &e) {
+                //     RCLCPP_WARN(this->get_logger(), "VoxelDownSample(scan init, %.6f) failed: %s", voxelsize_fine_, e.what());
+                // }
                 if (source->points_.size() > static_cast<size_t>(maxpoints_source_)) {
                     source = source->RandomDownSample(double(maxpoints_source_) / source->points_.size());
                 }
+                auto min_bound_sbt = source->GetMinBound();
+                auto max_bound_sbt = source->GetMaxBound();
+                std::cout << "scan_bt min_bound: " << min_bound_sbt.transpose() << std::endl;
+                std::cout << "scan_bt max_bound: " << max_bound_sbt.transpose() << std::endl;
+                std::cout << "scan_bt max_bound - min_bound: " << (max_bound_sbt - min_bound_sbt).transpose() << "coef: " << (max_bound_sbt - min_bound_sbt).maxCoeff() << std::endl;
+
+                if (target->points_.empty() || source->points_.empty()) {
+                    RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000, "Init ICP skipped: empty target (%zu) or source (%zu)", target->points_.size(), source->points_.size());
+                    continue;
+                }
+                // sensor_msgs::msg::PointCloud2 source_msg;
+                // open3d_conversions::open3dToRos(*source, source_msg, "map");
+                // source_msg.header.stamp = this->now();
+                // pub_scan2map_->publish(source_msg);
+                // source_msg.header.frame_id = "camera_init";
+                // pub_scan_->publish(source_msg);
 
                 // Apply current transform, then multiscale ICP
                 source->Transform(reg_matrix);
                 *pcd_scan2map = *source;
-                auto multiScale_reg_matrix = pcd_tools::RegistrationMultiScaleIcp(source, target, voxelsize_fine_, 1, {1, 4, 6});
-                reg_matrix = multiScale_reg_matrix * reg_matrix;
-                source->Transform(multiScale_reg_matrix);
+                auto min_bound_s2m = source->GetMinBound();
+                auto max_bound_s2m = source->GetMaxBound();
+                std::cout << "scan_map min_bound: " << min_bound_s2m.transpose() << std::endl;
+                std::cout << "scan_map max_bound: " << max_bound_s2m.transpose() << std::endl;
+                std::cout << "scan_map max_bound - min_bound: " << (max_bound_s2m - min_bound_s2m).transpose() << "coef: " << (max_bound_s2m - min_bound_s2m).maxCoeff() << std::endl;
+                sensor_msgs::msg::PointCloud2 source_msg;
+                open3d_conversions::open3dToRos(*source, source_msg, "map");
+                source_msg.header.stamp = this->now();
+                pub_scan2map_->publish(source_msg);
+                try {
+                    auto multiScale_reg_matrix = pcd_tools::RegistrationMultiScaleIcp(source, target, voxelsize_fine_, 1, {1, 4, 6}, true);
+                    reg_matrix = multiScale_reg_matrix * reg_matrix;
+                    source->Transform(multiScale_reg_matrix);
+                } catch (const std::exception &e) {
+                    RCLCPP_WARN(this->get_logger(), "RegistrationMultiScaleIcp failed: %s", e.what());
+                    continue;
+                }
 
-                auto eva_result = open3d::pipelines::registration::EvaluateRegistration(*source, *target, voxelsize_fine_ * 3);
+                auto eva_result = open3d::pipelines::registration::EvaluateRegistration(*source, *target, std::max(1e-3, voxelsize_fine_ * 3));
                 fitness_initial = eva_result.fitness_;
                 *pcd_scan2map = *source;
 
+                // Final guard: keep odom->map homogeneous
+                reg_matrix.row(3) = Eigen::Vector4d(0.0, 0.0, 0.0, 1.0);
                 mat_odom2map_ = reg_matrix;
             }
 
@@ -623,9 +689,18 @@ void GlobalLocalization::LocalizationInitialize()
                 }
             } else {
                 count_success = 0;
+                RCLCPP_WARN(this->get_logger(), "Initial localization failed (fitness %.3f)", fitness_initial);
             }
         }
     }
+
+    // Publish coarse map for visualization
+    sensor_msgs::msg::PointCloud2 map_msg;
+    // Convert using reusable helper
+    open3d_conversions::open3dToRos(*pcd_map_coarse_, map_msg, "map");
+    map_msg.header.stamp = this->now();
+    pub_map_->publish(map_msg);
+    RCLCPP_INFO(this->get_logger(), "Published coarse map: %zu points", pcd_map_coarse_->points_.size());
 
     RCLCPP_WARN(this->get_logger(), "Localization initialization finished");
 }
@@ -802,6 +877,10 @@ void GlobalLocalization::CallbackScan(const sensor_msgs::msg::PointCloud2::Share
             for (auto &pc : tmp) {
                 que_pcd_scan_.push(std::move(pc));
             }
+            sensor_msgs::msg::PointCloud2 scan_cur_msg;
+            open3d_conversions::open3dToRos(*pcd_scan_cur_, scan_cur_msg, "camera_init");
+            scan_cur_msg.header.stamp = this->now();
+            pub_scan_->publish(scan_cur_msg);
         }
     }
 }
@@ -823,6 +902,7 @@ void GlobalLocalization::CallbackInitialPose(const geometry_msgs::msg::PoseWithC
             initialpose->pose.pose.orientation.x,
             initialpose->pose.pose.orientation.y,
             initialpose->pose.pose.orientation.z);
+        mat_initialpose_.setIdentity();
         mat_initialpose_.block<3,3>(0,0) = rq.toRotationMatrix();
         mat_initialpose_.block<3,1>(0,3) = Eigen::Vector3d(
             initialpose->pose.pose.position.x,
@@ -944,8 +1024,8 @@ void GlobalLocalization::Localization()
             Eigen::Matrix4d mat_baselink2odom_cur = mat_baselink2odom_;
             Eigen::Matrix4d mat_baselink2map_cur = mat_baselink2map_;
 
-            // Use snapshot for processing
-            *pcd_scan = std::move(pcd_local);
+            // Use current accumulated scan as snapshot
+            *pcd_scan = *pcd_scan_cur_;
             lock_scan_.unlock();
 
             Eigen::Vector3d cur_loc(mat_baselink2map_cur(0,3), mat_baselink2map_cur(1,3), mat_baselink2map_cur(2,3));
@@ -973,14 +1053,33 @@ void GlobalLocalization::Localization()
             }
 
             source = pcd_scan->Crop(*OBB_scan);
-            source = source->VoxelDownSample(voxelsize_fine_);
+            *pcd_scan2map = *source;
+            pcd_scan2map->Transform(reg_matrix);
+            sensor_msgs::msg::PointCloud2 source_msg;
+            open3d_conversions::open3dToRos(*pcd_scan2map, source_msg, "map");
+            source_msg.header.stamp = this->now();
+            pub_scan2map_->publish(source_msg);
+             
+            try {
+                if (voxelsize_fine_ > 0.0) {
+                    source = source->VoxelDownSample(voxelsize_fine_);
+                }
+            } catch (const std::exception &e) {
+                RCLCPP_WARN(this->get_logger(), "VoxelDownSample(scan loop, %.6f) failed: %s", voxelsize_fine_, e.what());
+            }
             if (source->points_.size() > static_cast<size_t>(maxpoints_source_)) {
                 source = source->RandomDownSample(double(maxpoints_source_) / source->points_.size());
             }
 
-            auto reg_result2 = pcd_tools::RegistrationIcp(source, target, voxelsize_fine_ * 2, reg_matrix, 1);
-            reg_matrix = reg_result2.transformation_ * reg_matrix;
-            auto eva_result2 = open3d::pipelines::registration::EvaluateRegistration(*source, *target, voxelsize_fine_ * 4, reg_matrix);
+            if (!target->points_.empty() && !source->points_.empty()) {
+                try {
+                    auto reg_result2 = pcd_tools::RegistrationIcp(source, target, std::max(1e-3, voxelsize_fine_ * 2), reg_matrix, 1);
+                    reg_matrix = reg_result2.transformation_ * reg_matrix;
+                } catch (const std::exception &e) {
+                    RCLCPP_WARN(this->get_logger(), "RegistrationIcp failed: %s", e.what());
+                }
+            }
+            auto eva_result2 = open3d::pipelines::registration::EvaluateRegistration(*source, *target, std::max(1e-3, voxelsize_fine_ * 4), reg_matrix);
             loc_fitness_ = eva_result2.fitness_;
             if (loc_fitness_ > threshold_fitness_) {
                 mat_odom2map_ = reg_matrix;
@@ -1013,7 +1112,7 @@ Eigen::Matrix3d GlobalLocalization::Euler2Matrix3d(const Eigen::Vector3d euler)
     Eigen::AngleAxisd rollAngle(Eigen::AngleAxisd(euler_rad[0], Eigen::Vector3d::UnitX()));
     Eigen::AngleAxisd pitchAngle(Eigen::AngleAxisd(euler_rad[1], Eigen::Vector3d::UnitY()));
     Eigen::AngleAxisd yawAngle(Eigen::AngleAxisd(euler_rad[2], Eigen::Vector3d::UnitZ()));
-    Eigen::Matrix3d mat3d = rollAngle * pitchAngle * yawAngle;
+    Eigen::Matrix3d mat3d = (rollAngle * pitchAngle * yawAngle).toRotationMatrix();
     return mat3d;
 }
 

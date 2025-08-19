@@ -17,6 +17,7 @@ Author: FAST-LIO Localization Team
 """
 
 import os.path
+from re import T
 from ament_index_python.packages import get_package_share_directory
 
 from launch import LaunchDescription
@@ -39,6 +40,7 @@ def generate_launch_description():
     package_path = get_package_share_directory('open3d_loc')
     default_config_path = os.path.join(package_path, 'config', 'loc_param_g1.yaml')
     default_map_path = os.path.join(package_path, '..', 'data', 'map.ply')
+    default_rviz_config_path = os.path.join(package_path, 'rviz_cfg', 'loc_map_cur_humble.rviz')
 
     # ===== Launch Arguments =====
     
@@ -63,6 +65,20 @@ def generate_launch_description():
         description='Path to the point cloud map file (.ply format) for localization'
     )
 
+    # RViz2 toggle
+    rviz = LaunchConfiguration('rviz')
+    declare_rviz_cmd = DeclareLaunchArgument(
+        'rviz', default_value='true',
+        description='Launch RViz2 visualization if true'
+    )
+
+    # RViz2 config
+    rviz_config = LaunchConfiguration('rviz_config')
+    declare_rviz_config_cmd = DeclareLaunchArgument(
+        'rviz_config', default_value=default_rviz_config_path,
+        description='Path to RViz2 config file (.rviz)'
+    )
+
     # ===== Static Transform Publishers =====
     # These establish the robot's frame hierarchy and coordinate system
     
@@ -72,8 +88,7 @@ def generate_launch_description():
         package='tf2_ros',
         executable='static_transform_publisher',
         name='camera_init2odom',
-        arguments=['0', '0', '0', '0', '0', '0', '1', 'odom', 'camera_init'],
-        description='Publishes static transform from camera_init to odom frame'
+        arguments=['0', '0', '0', '0', '0', '0', '1', 'odom', 'camera_init']
     )
 
     # Transform from base_link to imu_link frame
@@ -82,8 +97,7 @@ def generate_launch_description():
         package='tf2_ros',
         executable='static_transform_publisher',
         name='imulink2baselink',
-        arguments=['0', '0', '0', '0', '0', '0', '1', 'base_link', 'imu_link'],
-        description='Publishes static transform from base_link to imu_link frame'
+        arguments=['0', '0', '0', '0', '0', '0', '1', 'base_link', 'imu_link']
     )
 
     # Transform from motion_link to base_link frame
@@ -92,8 +106,18 @@ def generate_launch_description():
         package='tf2_ros',
         executable='static_transform_publisher',
         name='base_center_broadcaster',
-        arguments=['0', '0', '0', '0', '0', '0', '1', 'motion_link', 'base_link'],
-        description='Publishes static transform from motion_link to base_link frame'
+        arguments=['0', '0', '0', '0', '0', '0', '1', 'motion_link', 'base_link']
+    )
+
+    # ===== RViz2 Visualization =====
+    rviz_node = Node(
+        package='rviz2',
+        executable='rviz2',
+        name='rviz2',
+        arguments=['-d', rviz_config],
+        parameters=[{'use_sim_time': use_sim_time}],
+        output='screen',
+        condition=IfCondition(rviz)
     )
 
     # ===== Global Localization Node =====
@@ -118,8 +142,8 @@ def generate_launch_description():
             {'voxelsize_fine': 0.1},          # Voxel size for fine registration (meters)
             
             # Registration quality thresholds
-            {'threshold_fitness': 0.5},       # Minimum fitness score for regular updates
-            {'threshold_fitness_init': 0.5},  # Minimum fitness score for initialization
+            {'threshold_fitness': 0.9},       # Minimum fitness score for regular updates
+            {'threshold_fitness_init': 0.9},  # Minimum fitness score for initialization
             
             # System timing
             {'loc_frequence': 2.5},           # Localization frequency (Hz)
@@ -133,15 +157,14 @@ def generate_launch_description():
             {'maxpoints_target': 400000},     # Maximum points in target (map) for registration
             
             # Kalman filtering configuration
-            {'filter_odom2map': False},       # Enable/disable Kalman filtering
+            {'filter_odom2map': True},       # Enable/disable Kalman filtering
             {'kalman_processVar2': 0.001},    # Process noise variance for Kalman filter
             {'kalman_estimatedMeasVar2': 0.02}, # Measurement noise variance for Kalman filter
             
             # Quality control
             {'confidence_loc_th': 0.7},       # Confidence threshold for localization
             {'dis_updatemap': 3.5}            # Distance threshold for map updates (meters)
-        ],
-        description='Main localization node that performs point cloud registration and pose estimation'
+        ]
     )
 
     # ===== Launch Description Assembly =====
@@ -153,6 +176,11 @@ def generate_launch_description():
     ld.add_action(declare_use_sim_time_cmd)
     ld.add_action(declare_config_path_cmd)
     ld.add_action(declare_map_path_cmd)
+    ld.add_action(declare_rviz_cmd)
+    ld.add_action(declare_rviz_config_cmd)
+
+    # Optionally launch RViz2
+    ld.add_action(rviz_node)
 
     # Add static transform publishers
     ld.add_action(camera_init2odom_node)

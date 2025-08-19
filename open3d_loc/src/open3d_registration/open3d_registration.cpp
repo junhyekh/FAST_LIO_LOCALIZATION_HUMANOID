@@ -1,4 +1,6 @@
 #include "open3d_registration/open3d_registration.h"
+#include <algorithm>
+#include <cmath>
 
 namespace pcd_tools
 {
@@ -9,7 +11,7 @@ namespace pcd_tools
         std::shared_ptr<open3d::pipelines::registration::Feature> source_fpfh,
         std::shared_ptr<open3d::pipelines::registration::Feature> target_fpfh,
         float voxel_size,
-        open3d::utility::optional<unsigned int> seed_,
+        // open3d::utility::optional<unsigned int> seed_,
         bool mutual_filter)
     {
 
@@ -36,8 +38,8 @@ namespace pcd_tools
                 mutual_filter, distance_threshold,
                 open3d::pipelines::registration::
                     TransformationEstimationPointToPoint(false),
-                4 /*最小3*/, correspondence_checker,
-                open3d::pipelines::registration::RANSACConvergenceCriteria(1000000, 0.999), seed_);
+                4, correspondence_checker,
+                open3d::pipelines::registration::RANSACConvergenceCriteria(1000000, 0.999));
         return registration_result;
     }
 
@@ -77,7 +79,8 @@ namespace pcd_tools
 
     Eigen::Matrix4d RegistrationMultiScaleIcp(std::shared_ptr<open3d::geometry::PointCloud> source,
                                               std::shared_ptr<open3d::geometry::PointCloud> target,
-                                              double voxel_size, int icp_method, std::vector<double> scale)
+                                              double voxel_size, int icp_method, std::vector<double> scale,
+                                              bool multithread_preprocess)
     {
         struct PcdPair
         {
@@ -89,39 +92,101 @@ namespace pcd_tools
 
         std::chrono::high_resolution_clock::time_point preprocess_all_s = std::chrono::high_resolution_clock::now();
         std::vector<PcdPair> vec_pcd_pair;
+        std::vector<float> vec_voxel_size;
 
         for (std::size_t scale_i = 0; scale_i < scale.size(); ++scale_i)
         {
             PcdPair pair_;
             pair_.voxel_size_ = voxel_size * scale[scale_i];
+            if (!(pair_.voxel_size_ > 0.0)) {
+                // Skip invalid voxel sizes
+                continue;
+            }
+            vec_voxel_size.push_back(pair_.voxel_size_);
             pair_.icp_threshold_ = pair_.voxel_size_ * 1.5;
             vec_pcd_pair.push_back(pair_);
         }
 
         int num_pair = vec_pcd_pair.size();
+        if (num_pair == 0) {
+            // Fallback: use a minimal positive voxel size if inputs invalid
+            PcdPair pair_;
+            pair_.voxel_size_ = std::max(1e-3, voxel_size);
+            pair_.icp_threshold_ = pair_.voxel_size_ * 1.5;
+            vec_pcd_pair.push_back(pair_);
+            vec_voxel_size.push_back(pair_.voxel_size_);
+            num_pair = 1;
+        }
         // vec_pcd
+        {
+            std::ostringstream oss;
+            oss << "RegistrationMultiScaleIcp start with voxel_sizes: ";
+            for (size_t i = 0; i < vec_voxel_size.size(); ++i) {
+                oss << vec_voxel_size[i];
+                if (i != vec_voxel_size.size() - 1) {
+                    oss << ", ";
+                }
+            }
+            std::cout << oss.str() << std::endl;
+        }
         auto pcd_preprocess = [&](int pcd_i)
         {
             std::chrono::high_resolution_clock::time_point preprocess_s = std::chrono::high_resolution_clock::now();
             double voxel_size_ = vec_pcd_pair[pcd_i].voxel_size_;
-            std::cout << "scale i: " << pcd_i << " voxel_size: " << voxel_size_ << std::endl;
-            vec_pcd_pair[pcd_i].pcd_src = source->VoxelDownSample(voxel_size_);
-            vec_pcd_pair[pcd_i].pcd_tgt = target->VoxelDownSample(voxel_size_);
-            vec_pcd_pair[pcd_i].pcd_tgt->EstimateNormals(
-                open3d::geometry::KDTreeSearchParamHybrid(voxel_size_ * 2, 30));
+            // std::cout << "scale i: " << pcd_i << " voxel_size: " << voxel_size_ << std::endl;
+            // std::cout << "source points size: " << source->points_.size() << std::endl;
+            // auto min_bound = source->GetMinBound();
+            // auto max_bound = source->GetMaxBound();
+            // std::cout << "min_bound: " << min_bound.transpose() << std::endl;
+            // std::cout << "max_bound: " << max_bound.transpose() << std::endl;
+            // std::cout << "max_bound - min_bound: " << (max_bound - min_bound).transpose() << "coef: " << (max_bound - min_bound).maxCoeff() << std::endl;
+            // try{
+            //     // vec_pcd_pair[pcd_i].pcd_src = source->VoxelDownSample(voxel_size_);
+            //     vec_pcd_pair[pcd_i].pcd_src = std::make_shared<open3d::geometry::PointCloud>(*source);
+            // } catch (const std::exception &e) {
+            //     std::cerr << "Preprocess failed at scale index " << pcd_i << ": " << e.what() << std::endl;
+            //     throw; // rethrow to surface error
+            // }
+            // auto min_bound_ = target->GetMinBound();
+            // auto max_bound_ = target->GetMaxBound();
+            // std::cout << "target min_bound: " << min_bound_.transpose() << std::endl;
+            // std::cout << "target max_bound: " << max_bound_.transpose() << std::endl;
+            // std::cout << "target max_bound - min_bound: " << (max_bound_ - min_bound_).transpose() << "coef: " << (max_bound_ - min_bound_).maxCoeff() << std::endl;
+            try {
+                vec_pcd_pair[pcd_i].pcd_src = source->VoxelDownSample(voxel_size_);
+                vec_pcd_pair[pcd_i].pcd_tgt = target->VoxelDownSample(voxel_size_);
+                if (!vec_pcd_pair[pcd_i].pcd_tgt || vec_pcd_pair[pcd_i].pcd_tgt->IsEmpty()) {
+                    throw std::runtime_error("Downsampled target is empty");
+                }
+                vec_pcd_pair[pcd_i].pcd_tgt->EstimateNormals(
+                    open3d::geometry::KDTreeSearchParamHybrid(std::max(1e-3, voxel_size_ * 2.0), 30));
+            } catch (const std::exception &e) {
+                std::cerr << "Preprocess failed at scale index " << pcd_i << ": " << e.what() << std::endl;
+                throw; // rethrow to surface error
+            }
+            std::cout << "target points size: " << vec_pcd_pair[pcd_i].pcd_tgt->points_.size() << std::endl;
 
             std::chrono::high_resolution_clock::time_point preprocess_e = std::chrono::high_resolution_clock::now();
             auto preprocess_cost = std::chrono::duration_cast<std::chrono::milliseconds>(preprocess_e - preprocess_s).count();
         };
 
-        std::vector<std::thread> thread_preprocess;
-        for (int i = 0; i < num_pair; ++i)
-        {
-            thread_preprocess.push_back(std::thread(pcd_preprocess, i));
-        }
-        for (auto &t : thread_preprocess)
-        {
-            t.join();
+        if (multithread_preprocess) {
+            std::vector<std::thread> thread_preprocess;
+            thread_preprocess.reserve(num_pair);
+            for (int i = 0; i < num_pair; ++i)
+            {
+                thread_preprocess.push_back(std::thread(pcd_preprocess, i));
+            }
+            for (auto &t : thread_preprocess)
+            {
+                t.join();
+            }
+        } else {
+            for (int i = 0; i < num_pair; ++i)
+            {
+                std::cout << "preprocess i: " << i << std::endl;
+                pcd_preprocess(i);
+            }
         }
         std::chrono::high_resolution_clock::time_point preprocess_all_e = std::chrono::high_resolution_clock::now();
         auto preprocess_all_cost = std::chrono::duration_cast<std::chrono::milliseconds>(preprocess_all_e - preprocess_all_s).count();
@@ -148,6 +213,126 @@ namespace pcd_tools
 
         return matrix_icp;
     }
+
+    //////////////////// CUDA ////////////////////
+    // Eigen::Matrix4d RegistrationIcpCUDA(std::shared_ptr<open3d::t::geometry::PointCloud> source,
+    //                                     std::shared_ptr<open3d::t::geometry::PointCloud> target,
+    //                                     double voxel_size,
+    //                                     int icp_method,
+    //                                     Eigen::Matrix4d init_matrix,
+    //                                     int icp_iteration)
+    // {
+    //     using namespace open3d::t::pipelines::registration;
+
+    //     // Ensure normals for point-to-plane
+    //     if (icp_method != 0) {
+    //         if (!target->HasPointNormals()) {
+    //             target->EstimateNormals(open3d::core::Tensor::Init<int64_t>({30}), voxel_size * 2.0);
+    //         }
+    //         if (!source->HasPointNormals()) {
+    //             source->EstimateNormals(open3d::core::Tensor::Init<int64_t>({30}), voxel_size * 2.0);
+    //         }
+    //     }
+
+    //     double max_corr = std::max(voxel_size * 1.5, 1e-6);
+    //     ICPConvergenceCriteria criteria(1e-6, 1e-6, icp_iteration);
+
+    //     // Initial transform tensor
+    //     open3d::core::Tensor init_T = open3d::core::Tensor::FromBlob(
+    //         init_matrix.data(), {4, 4}, open3d::core::Float64, open3d::core::Device("CPU:0"));
+
+    //     RegistrationResult result;
+    //     if (icp_method == 0) {
+    //         TransformationEstimationPointToPoint estimation;
+    //         result = ICP(*source, *target, max_corr, init_T, estimation, criteria);
+    //     } else if (icp_method == 1) {
+    //         TransformationEstimationPointToPlane estimation;
+    //         result = ICP(*source, *target, max_corr, init_T, estimation, criteria);
+    //     } else { // icp_method == 2 -> point-to-plane with TukeyLoss
+    //         RobustKernel kernel(RobustKernelMethod::TukeyLoss, 4.6851);
+    //         TransformationEstimationPointToPlane estimation(kernel);
+    //         result = ICP(*source, *target, max_corr, init_T, estimation, criteria);
+    //     }
+
+    //     open3d::core::Tensor T_cpu = result.transformation_.To(open3d::core::Device("CPU:0"), open3d::core::Float64).Contiguous();
+    //     Eigen::Matrix4d T = Eigen::Map<Eigen::Matrix<double, 4, 4, Eigen::RowMajor>>(T_cpu.GetDataPtr<double>());
+    //     return T;
+    // }
+
+    // Eigen::Matrix4d RegistrationMultiScaleIcpCUDA(std::shared_ptr<open3d::t::geometry::PointCloud> source,
+    //                                           std::shared_ptr<open3d::t::geometry::PointCloud> target,
+    //                                           double voxel_size, int icp_method, std::vector<double> scale)
+    // {
+    //     using namespace open3d::t::pipelines::registration;
+
+    //     // Derive voxel sizes from base voxel_size and requested scale factors
+    //     std::vector<double> voxel_sizes;
+    //     voxel_sizes.reserve(scale.size());
+    //     for (double s : scale) {
+    //         double vs = voxel_size * s;
+    //         if (vs > 0.0) voxel_sizes.push_back(vs);
+    //     }
+    //     if (voxel_sizes.empty()) {
+    //         voxel_sizes.push_back(voxel_size > 0.0 ? voxel_size : 0.1);
+    //     }
+
+    //     // Sort strictly decreasing as required
+    //     // std::sort(voxel_sizes.begin(), voxel_sizes.end(), std::greater<double>());
+    //     // voxel_sizes.erase(std::unique(voxel_sizes.begin(), voxel_sizes.end(), [](double a, double b) {
+    //     //     return std::abs(a - b) < 1e-12;
+    //     // }), voxel_sizes.end());
+
+    //     // Build per-scale criteria and correspondence distances
+    //     std::vector<ICPConvergenceCriteria> criteria_list;
+    //     criteria_list.reserve(voxel_sizes.size());
+    //     std::vector<double> max_correspondence_distances;
+    //     max_correspondence_distances.reserve(voxel_sizes.size());
+    //     for (double vs : voxel_sizes) {
+    //         criteria_list.emplace_back(1e-6, 1e-6, 30);
+    //         max_correspondence_distances.emplace_back(vs * 1.5);
+    //     }
+
+    //     // Initial transform (CPU Float64)
+    //     open3d::core::Tensor init_source_to_target =
+    //         open3d::core::Tensor::Eye(4, open3d::core::Float64, open3d::core::Device("CPU:0"));
+
+    //     // Choose estimation method
+    //     RegistrationResult result;
+    //     if (icp_method == 0) {
+    //         TransformationEstimationPointToPoint estimation;
+    //         result = MultiScaleICP(
+    //             *source, *target,
+    //             voxel_sizes,
+    //             criteria_list,
+    //             max_correspondence_distances,
+    //             init_source_to_target,
+    //             estimation);
+    //     } else if (icp_method == 2) {
+    //         RobustKernel kernel(RobustKernelMethod::TukeyLoss, 4.6851);
+    //         TransformationEstimationPointToPlane estimation(kernel);
+    //         result = MultiScaleICP(
+    //             *source, *target,
+    //             voxel_sizes,
+    //             criteria_list,
+    //             max_correspondence_distances,
+    //             init_source_to_target,
+    //             estimation);
+    //     } else {
+    //         TransformationEstimationPointToPlane estimation;
+    //         result = MultiScaleICP(
+    //             *source, *target,
+    //             voxel_sizes,
+    //             criteria_list,
+    //             max_correspondence_distances,
+    //             init_source_to_target,
+    //             estimation);
+    //     }
+
+    //     // Convert transformation tensor to Eigen
+    //     open3d::core::Tensor T_cpu = result.transformation_.To(open3d::core::Device("CPU:0"), open3d::core::Float64).Contiguous();
+    //     Eigen::Matrix4d matrix_icp = Eigen::Map<Eigen::Matrix<double, 4, 4, Eigen::RowMajor>>(T_cpu.GetDataPtr<double>());
+    //     return matrix_icp;
+    // }
 
     open3d::pipelines::registration::RegistrationResult RegistrationEvaluate(const std::shared_ptr<open3d::geometry::PointCloud> src, const std::shared_ptr<open3d::geometry::PointCloud> tgt, double voxel_size, Eigen::Matrix4d transformation)
     {
@@ -344,7 +529,7 @@ namespace pcd_tools
 
             // 粗配准
             open3d::pipelines::registration::RegistrationResult registration_result;
-            registration_result = pcd_tools::RegistrationFpfh(source, target, source_fpfh, target_fpfh, voxel_size, seed_, true);
+            registration_result = pcd_tools::RegistrationFpfh(source, target, source_fpfh, target_fpfh, voxel_size, true);
             fpfh_matrix = registration_result.transformation_;
             std::chrono::high_resolution_clock::time_point fpfh_time_e = std::chrono::high_resolution_clock::now();
         }

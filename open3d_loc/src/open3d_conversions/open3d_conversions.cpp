@@ -13,12 +13,10 @@
 // limitations under the License.
 
 #include "open3d_conversions/open3d_conversions.h"
-#include "open3d_conversions/RosConversions.h"
-#include "open3d_conversions/DpgtConversions.h"
 
 namespace open3d_conversions
 {
-void open3dToRos(const open3d::geometry::PointCloud& pointcloud, sensor_msgs::PointCloud2& ros_pc2,
+void open3dToRos(const open3d::geometry::PointCloud& pointcloud, sensor_msgs::msg::PointCloud2& ros_pc2,
                  std::string frame_id)
 {
   sensor_msgs::PointCloud2Modifier modifier(ros_pc2);
@@ -65,30 +63,30 @@ void open3dToRos(const open3d::geometry::PointCloud& pointcloud, sensor_msgs::Po
   }
 }
 
-void rosToOpen3d(const sensor_msgs::PointCloud2ConstPtr& ros_pc2, open3d::geometry::PointCloud& o3d_pc,
+void rosToOpen3d(const sensor_msgs::msg::PointCloud2& ros_pc2, open3d::geometry::PointCloud& o3d_pc,
                  bool skip_colors)
 {
-  sensor_msgs::PointCloud2ConstIterator<float> ros_pc2_x(*ros_pc2, "x");
-  sensor_msgs::PointCloud2ConstIterator<float> ros_pc2_y(*ros_pc2, "y");
-  sensor_msgs::PointCloud2ConstIterator<float> ros_pc2_z(*ros_pc2, "z");
-  o3d_pc.points_.reserve(ros_pc2->height * ros_pc2->width);
-  if (ros_pc2->fields.size() == 3 || skip_colors == true)
+  sensor_msgs::PointCloud2ConstIterator<float> ros_pc2_x(ros_pc2, "x");
+  sensor_msgs::PointCloud2ConstIterator<float> ros_pc2_y(ros_pc2, "y");
+  sensor_msgs::PointCloud2ConstIterator<float> ros_pc2_z(ros_pc2, "z");
+  o3d_pc.points_.reserve(ros_pc2.height * ros_pc2.width);
+  if (ros_pc2.fields.size() == 3 || skip_colors == true)
   {
-    for (size_t i = 0; i < ros_pc2->height * ros_pc2->width; ++i, ++ros_pc2_x, ++ros_pc2_y, ++ros_pc2_z)
+    for (size_t i = 0; i < ros_pc2.height * ros_pc2.width; ++i, ++ros_pc2_x, ++ros_pc2_y, ++ros_pc2_z)
     {
       o3d_pc.points_.push_back(Eigen::Vector3d(*ros_pc2_x, *ros_pc2_y, *ros_pc2_z));
     }
   }
   else
   {
-    o3d_pc.colors_.reserve(ros_pc2->height * ros_pc2->width);
-    if (ros_pc2->fields[3].name == "rgb")
+    o3d_pc.colors_.reserve(ros_pc2.height * ros_pc2.width);
+    if (ros_pc2.fields[3].name == "rgb")
     {
-      sensor_msgs::PointCloud2ConstIterator<uint8_t> ros_pc2_r(*ros_pc2, "r");
-      sensor_msgs::PointCloud2ConstIterator<uint8_t> ros_pc2_g(*ros_pc2, "g");
-      sensor_msgs::PointCloud2ConstIterator<uint8_t> ros_pc2_b(*ros_pc2, "b");
+      sensor_msgs::PointCloud2ConstIterator<uint8_t> ros_pc2_r(ros_pc2, "r");
+      sensor_msgs::PointCloud2ConstIterator<uint8_t> ros_pc2_g(ros_pc2, "g");
+      sensor_msgs::PointCloud2ConstIterator<uint8_t> ros_pc2_b(ros_pc2, "b");
 
-      for (size_t i = 0; i < ros_pc2->height * ros_pc2->width;
+      for (size_t i = 0; i < ros_pc2.height * ros_pc2.width;
            ++i, ++ros_pc2_x, ++ros_pc2_y, ++ros_pc2_z, ++ros_pc2_r, ++ros_pc2_g, ++ros_pc2_b)
       {
         o3d_pc.points_.push_back(Eigen::Vector3d(*ros_pc2_x, *ros_pc2_y, *ros_pc2_z));
@@ -96,10 +94,10 @@ void rosToOpen3d(const sensor_msgs::PointCloud2ConstPtr& ros_pc2, open3d::geomet
           Eigen::Vector3d(((int)(*ros_pc2_r)) / 255.0, ((int)(*ros_pc2_g)) / 255.0, ((int)(*ros_pc2_b)) / 255.0));
       }
     }
-    else if (ros_pc2->fields[3].name == "intensity")
+    else if (ros_pc2.fields[3].name == "intensity")
     {
-      sensor_msgs::PointCloud2ConstIterator<uint8_t> ros_pc2_i(*ros_pc2, "intensity");
-      for (size_t i = 0; i < ros_pc2->height * ros_pc2->width; ++i, ++ros_pc2_x, ++ros_pc2_y, ++ros_pc2_z, ++ros_pc2_i)
+      sensor_msgs::PointCloud2ConstIterator<uint8_t> ros_pc2_i(ros_pc2, "intensity");
+      for (size_t i = 0; i < ros_pc2.height * ros_pc2.width; ++i, ++ros_pc2_x, ++ros_pc2_y, ++ros_pc2_z, ++ros_pc2_i)
       {
         o3d_pc.points_.push_back(Eigen::Vector3d(*ros_pc2_x, *ros_pc2_y, *ros_pc2_z));
         o3d_pc.colors_.push_back(Eigen::Vector3d(*ros_pc2_i, *ros_pc2_i, *ros_pc2_i));
@@ -107,7 +105,7 @@ void rosToOpen3d(const sensor_msgs::PointCloud2ConstPtr& ros_pc2, open3d::geomet
     }
   }
 }
-void open3dToRos(const open3d::t::geometry::PointCloud& pointcloud, sensor_msgs::PointCloud2& ros_pc2,
+void open3dToRos(const open3d::t::geometry::PointCloud& pointcloud, sensor_msgs::msg::PointCloud2& ros_pc2,
                  std::string frame_id, int t_num_fields, ...)
 {
   sensor_msgs::PointCloud2Modifier modifier(ros_pc2);
@@ -138,17 +136,17 @@ void open3dToRos(const open3d::t::geometry::PointCloud& pointcloud, sensor_msgs:
       {
         if (data_type == "float")
         {
-          offset = addPointField(ros_pc2, field_name + "_x", 1, sensor_msgs::PointField::FLOAT32, offset);
-          offset = addPointField(ros_pc2, field_name + "_y", 1, sensor_msgs::PointField::FLOAT32, offset);
-          offset = addPointField(ros_pc2, field_name + "_z", 1, sensor_msgs::PointField::FLOAT32, offset);
-          offset += sizeOfPointField(sensor_msgs::PointField::FLOAT32);
+          offset = addPointField(ros_pc2, field_name + "_x", 1, sensor_msgs::msg::PointField::FLOAT32, offset);
+          offset = addPointField(ros_pc2, field_name + "_y", 1, sensor_msgs::msg::PointField::FLOAT32, offset);
+          offset = addPointField(ros_pc2, field_name + "_z", 1, sensor_msgs::msg::PointField::FLOAT32, offset);
+          offset += sizeOfPointField(sensor_msgs::msg::PointField::FLOAT32);
         }
         else if (data_type == "int")
         {
-          offset = addPointField(ros_pc2, field_name + "_x", 1, sensor_msgs::PointField::INT8, offset);
-          offset = addPointField(ros_pc2, field_name + "_y", 1, sensor_msgs::PointField::INT8, offset);
-          offset = addPointField(ros_pc2, field_name + "_z", 1, sensor_msgs::PointField::INT8, offset);
-          offset += sizeOfPointField(sensor_msgs::PointField::INT8);
+          offset = addPointField(ros_pc2, field_name + "_x", 1, sensor_msgs::msg::PointField::INT8, offset);
+          offset = addPointField(ros_pc2, field_name + "_y", 1, sensor_msgs::msg::PointField::INT8, offset);
+          offset = addPointField(ros_pc2, field_name + "_z", 1, sensor_msgs::msg::PointField::INT8, offset);
+          offset += sizeOfPointField(sensor_msgs::msg::PointField::INT8);
         }
         else
         {
@@ -229,22 +227,21 @@ void open3dToRos(const open3d::t::geometry::PointCloud& pointcloud, sensor_msgs:
   }
 }
 
-void rosToOpen3d(const sensor_msgs::PointCloud2ConstPtr& ros_pc2, open3d::t::geometry::PointCloud& o3d_tpc,
+void rosToOpen3d(const sensor_msgs::msg::PointCloud2& ros_pc2, open3d::t::geometry::PointCloud& o3d_tpc,
                  bool skip_colors)
 {
-  sensor_msgs::PointCloud2ConstIterator<float> ros_pc2_x(*ros_pc2, "x");
-  sensor_msgs::PointCloud2ConstIterator<float> ros_pc2_y(*ros_pc2, "y");
-  sensor_msgs::PointCloud2ConstIterator<float> ros_pc2_z(*ros_pc2, "z");
+  sensor_msgs::PointCloud2ConstIterator<float> ros_pc2_x(ros_pc2, "x");
+  sensor_msgs::PointCloud2ConstIterator<float> ros_pc2_y(ros_pc2, "y");
+  sensor_msgs::PointCloud2ConstIterator<float> ros_pc2_z(ros_pc2, "z");
   open3d::core::Dtype dtype_f = open3d::core::Dtype::Float32;
   open3d::core::Dtype dtype_lf = open3d::core::Dtype::Float64;
   open3d::core::Device device_type(open3d::core::Device::DeviceType::CPU, 0);
   std::vector<Eigen::Vector3d> o3d_TensorList_points;
-
-  for (int num_fields = 0; num_fields < ros_pc2->fields.size(); num_fields++)
+  for (int num_fields = 0; num_fields < ros_pc2.fields.size(); num_fields++)
   {
-    if (ros_pc2->fields[num_fields].name == "x")
+    if (ros_pc2.fields[num_fields].name == "x")
     {
-      for (size_t i = 0; i < ros_pc2->height * ros_pc2->width; ++i, ++ros_pc2_x, ++ros_pc2_y, ++ros_pc2_z)
+      for (size_t i = 0; i < ros_pc2.height * ros_pc2.width; ++i, ++ros_pc2_x, ++ros_pc2_y, ++ros_pc2_z)
       {
         o3d_TensorList_points.push_back(Eigen::Vector3d(*ros_pc2_x, *ros_pc2_y, *ros_pc2_z));
       }
@@ -254,13 +251,13 @@ void rosToOpen3d(const sensor_msgs::PointCloud2ConstPtr& ros_pc2, open3d::t::geo
       num_fields++;
       num_fields++;
     }
-    else if (ros_pc2->fields[num_fields].name == "rgb" && !skip_colors)
+    else if (ros_pc2.fields[num_fields].name == "rgb" && !skip_colors)
     {
-      sensor_msgs::PointCloud2ConstIterator<uint8_t> ros_pc2_r(*ros_pc2, "r");
-      sensor_msgs::PointCloud2ConstIterator<uint8_t> ros_pc2_g(*ros_pc2, "g");
-      sensor_msgs::PointCloud2ConstIterator<uint8_t> ros_pc2_b(*ros_pc2, "b");
+      sensor_msgs::PointCloud2ConstIterator<uint8_t> ros_pc2_r(ros_pc2, "r");
+      sensor_msgs::PointCloud2ConstIterator<uint8_t> ros_pc2_g(ros_pc2, "g");
+      sensor_msgs::PointCloud2ConstIterator<uint8_t> ros_pc2_b(ros_pc2, "b");
       std::vector<Eigen::Vector3d> o3d_TensorList_colors;
-      for (size_t i = 0; i < ros_pc2->height * ros_pc2->width; ++i, ++ros_pc2_r, ++ros_pc2_g, ++ros_pc2_b)
+      for (size_t i = 0; i < ros_pc2.height * ros_pc2.width; ++i, ++ros_pc2_r, ++ros_pc2_g, ++ros_pc2_b)
       {
         o3d_TensorList_colors.push_back(
           Eigen::Vector3d(((int)(*ros_pc2_r)) / 255.0, ((int)(*ros_pc2_g)) / 255.0, ((int)(*ros_pc2_b)) / 255.0));
@@ -271,62 +268,62 @@ void rosToOpen3d(const sensor_msgs::PointCloud2ConstPtr& ros_pc2, open3d::t::geo
     }
     else
     {
-      if (ros_pc2->fields[num_fields].datatype == sensor_msgs::PointField::UINT8 ||
-          ros_pc2->fields[num_fields].datatype == sensor_msgs::PointField::INT8)
+      if (ros_pc2.fields[num_fields].datatype == sensor_msgs::msg::PointField::UINT8 ||
+          ros_pc2.fields[num_fields].datatype == sensor_msgs::msg::PointField::INT8)
       {
-        sensor_msgs::PointCloud2ConstIterator<uint8_t> ros_pc2_fx(*ros_pc2, ros_pc2->fields[num_fields].name);
-        sensor_msgs::PointCloud2ConstIterator<uint8_t> ros_pc2_fy(*ros_pc2, ros_pc2->fields[num_fields].name);
-        sensor_msgs::PointCloud2ConstIterator<uint8_t> ros_pc2_fz(*ros_pc2, ros_pc2->fields[num_fields].name);
+        sensor_msgs::PointCloud2ConstIterator<uint8_t> ros_pc2_fx(ros_pc2, ros_pc2.fields[num_fields].name);
+        sensor_msgs::PointCloud2ConstIterator<uint8_t> ros_pc2_fy(ros_pc2, ros_pc2.fields[num_fields].name);
+        sensor_msgs::PointCloud2ConstIterator<uint8_t> ros_pc2_fz(ros_pc2, ros_pc2.fields[num_fields].name);
         std::vector<Eigen::Vector3d> o3d_TensorList_fields;
 
-        for (size_t i = 0; i < ros_pc2->height * ros_pc2->width; ++i, ++ros_pc2_fx, ++ros_pc2_fy, ++ros_pc2_fz)
+        for (size_t i = 0; i < ros_pc2.height * ros_pc2.width; ++i, ++ros_pc2_fx, ++ros_pc2_fy, ++ros_pc2_fz)
         {
           o3d_TensorList_fields.push_back(Eigen::Vector3d(*ros_pc2_fx, *ros_pc2_fy, *ros_pc2_fz));
         }
         open3d::core::Tensor o3d_tpc_fields =
           open3d::core::eigen_converter::EigenVector3dVectorToTensor(o3d_TensorList_fields, dtype_f, device_type);
-        o3d_tpc.SetPointAttr(ros_pc2->fields[num_fields].name, o3d_tpc_fields);
+        o3d_tpc.SetPointAttr(ros_pc2.fields[num_fields].name, o3d_tpc_fields);
       }
-      else if (ros_pc2->fields[num_fields].datatype == sensor_msgs::PointField::FLOAT32)
+      else if (ros_pc2.fields[num_fields].datatype == sensor_msgs::msg::PointField::FLOAT32)
       {
-        sensor_msgs::PointCloud2ConstIterator<float> ros_pc2_fx(*ros_pc2, ros_pc2->fields[num_fields].name);
-        sensor_msgs::PointCloud2ConstIterator<float> ros_pc2_fy(*ros_pc2, ros_pc2->fields[num_fields].name);
-        sensor_msgs::PointCloud2ConstIterator<float> ros_pc2_fz(*ros_pc2, ros_pc2->fields[num_fields].name);
+        sensor_msgs::PointCloud2ConstIterator<float> ros_pc2_fx(ros_pc2, ros_pc2.fields[num_fields].name);
+        sensor_msgs::PointCloud2ConstIterator<float> ros_pc2_fy(ros_pc2, ros_pc2.fields[num_fields].name);
+        sensor_msgs::PointCloud2ConstIterator<float> ros_pc2_fz(ros_pc2, ros_pc2.fields[num_fields].name);
         std::vector<Eigen::Vector3d> o3d_TensorList_fields;
 
-        for (size_t i = 0; i < ros_pc2->height * ros_pc2->width; ++i, ++ros_pc2_fx, ++ros_pc2_fy, ++ros_pc2_fz)
+        for (size_t i = 0; i < ros_pc2.height * ros_pc2.width; ++i, ++ros_pc2_fx, ++ros_pc2_fy, ++ros_pc2_fz)
         {
           o3d_TensorList_fields.push_back(Eigen::Vector3d(*ros_pc2_fx, *ros_pc2_fy, *ros_pc2_fz));
         }
         open3d::core::Tensor o3d_tpc_fields =
           open3d::core::eigen_converter::EigenVector3dVectorToTensor(o3d_TensorList_fields, dtype_f, device_type);
-        o3d_tpc.SetPointAttr(ros_pc2->fields[num_fields].name, o3d_tpc_fields);
+        o3d_tpc.SetPointAttr(ros_pc2.fields[num_fields].name, o3d_tpc_fields);
       }
       else
       {
-        sensor_msgs::PointCloud2ConstIterator<float> ros_pc2_fx(*ros_pc2, ros_pc2->fields[num_fields].name);
-        sensor_msgs::PointCloud2ConstIterator<float> ros_pc2_fy(*ros_pc2, ros_pc2->fields[num_fields].name);
-        sensor_msgs::PointCloud2ConstIterator<float> ros_pc2_fz(*ros_pc2, ros_pc2->fields[num_fields].name);
+        sensor_msgs::PointCloud2ConstIterator<float> ros_pc2_fx(ros_pc2, ros_pc2.fields[num_fields].name);
+        sensor_msgs::PointCloud2ConstIterator<float> ros_pc2_fy(ros_pc2, ros_pc2.fields[num_fields].name);
+        sensor_msgs::PointCloud2ConstIterator<float> ros_pc2_fz(ros_pc2, ros_pc2.fields[num_fields].name);
         std::vector<Eigen::Vector3d> o3d_TensorList_fields;
 
-        for (size_t i = 0; i < ros_pc2->height * ros_pc2->width; ++i, ++ros_pc2_fx, ++ros_pc2_fy, ++ros_pc2_fz)
+        for (size_t i = 0; i < ros_pc2.height * ros_pc2.width; ++i, ++ros_pc2_fx, ++ros_pc2_fy, ++ros_pc2_fz)
         {
           o3d_TensorList_fields.push_back(Eigen::Vector3d(*ros_pc2_fx, *ros_pc2_fy, *ros_pc2_fz));
         }
         open3d::core::Tensor o3d_tpc_fields =
           open3d::core::eigen_converter::EigenVector3dVectorToTensor(o3d_TensorList_fields, dtype_f, device_type);
-        o3d_tpc.SetPointAttr(ros_pc2->fields[num_fields].name, o3d_tpc_fields);
+        o3d_tpc.SetPointAttr(ros_pc2.fields[num_fields].name, o3d_tpc_fields);
       }
     }
   }
 }
 }    // namespace open3d_conversions
 
-inline int addPointField(sensor_msgs::PointCloud2& cloud_msg, const std::string& name, int count, int datatype,
+inline int addPointField(sensor_msgs::msg::PointCloud2& cloud_msg, const std::string& name, int count, int datatype,
                          int offset)
 
 {
-  sensor_msgs::PointField point_field;
+  sensor_msgs::msg::PointField point_field;
   point_field.name = name;
   point_field.count = count;
   point_field.datatype = datatype;
@@ -339,21 +336,21 @@ inline int addPointField(sensor_msgs::PointCloud2& cloud_msg, const std::string&
 
 inline int sizeOfPointField(int datatype)
 {
-  if ((datatype == sensor_msgs::PointField::INT8) || (datatype == sensor_msgs::PointField::UINT8))
+  if ((datatype == sensor_msgs::msg::PointField::INT8) || (datatype == sensor_msgs::msg::PointField::UINT8))
   {
     return 1;
   }
-  else if ((datatype == sensor_msgs::PointField::INT16) ||    // NOLINT
-           (datatype == sensor_msgs::PointField::UINT16))
+  else if ((datatype == sensor_msgs::msg::PointField::INT16) ||    // NOLINT
+           (datatype == sensor_msgs::msg::PointField::UINT16))
   {
     return 2;
   }
-  else if ((datatype == sensor_msgs::PointField::INT32) ||    // NOLINT
-           (datatype == sensor_msgs::PointField::UINT32) || (datatype == sensor_msgs::PointField::FLOAT32))
+  else if ((datatype == sensor_msgs::msg::PointField::INT32) ||    // NOLINT
+           (datatype == sensor_msgs::msg::PointField::UINT32) || (datatype == sensor_msgs::msg::PointField::FLOAT32))
   {
     return 4;
   }
-  else if (datatype == sensor_msgs::PointField::FLOAT64)
+  else if (datatype == sensor_msgs::msg::PointField::FLOAT64)
   {
     return 8;
   }

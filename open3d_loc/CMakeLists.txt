@@ -28,8 +28,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 # ===== Open3D Configuration =====
-# Set path to Open3D installation - update this path for your system
-set(Open3D_DIR "/home/liar/open3d141/lib/cmake/Open3D")
+# Avoid hardcoding Open3D_DIR; rely on system or user-provided CMAKE_PREFIX_PATH
 find_package(Open3D REQUIRED)
 
 # ===== ROS2 Dependencies =====
@@ -54,7 +53,7 @@ find_package(pcl_ros REQUIRED)
 find_package(pcl_conversions REQUIRED)
 
 # Interface generation
-find_package(rosidl_default_generators REQUIRED)
+# find_package(rosidl_default_generators REQUIRED)
 
 # ===== Third-party Libraries =====
 # Linear algebra library
@@ -62,6 +61,10 @@ find_package(Eigen3 REQUIRED)
 
 # Point Cloud Library components
 find_package(PCL REQUIRED COMPONENTS common io)
+
+# ===== CUDA Toolkit (optional, for CUDA-enabled Open3D builds) =====
+# If Open3D was built with CUDA and exports static CUDA libs, linking these resolves cudart/cublas symbols
+find_package(CUDAToolkit QUIET)
 
 # ===== Package Dependencies List =====
 # All dependencies required by this package
@@ -82,11 +85,11 @@ set(dependencies
 # ===== Interface Generation =====
 # Generate ROS2 interfaces (messages, services, actions)
 # Currently no custom interfaces defined, but structure is ready
-rosidl_generate_interfaces(${PROJECT_NAME}
-  # Add any custom messages here if needed
-  # Example: "msg/CustomMessage.msg"
-)
-ament_export_dependencies(rosidl_default_runtime)
+# rosidl_generate_interfaces(${PROJECT_NAME}
+#   # Add any custom messages here if needed
+#   # Example: "msg/CustomMessage.msg"
+# )
+# ament_export_dependencies(rosidl_default_runtime)
 
 # ===== Include Directories =====
 # Set up include paths for headers and libraries
@@ -101,21 +104,30 @@ include_directories(
 
 # Open3D registration library - handles point cloud registration algorithms
 add_library(open3d_registration src/open3d_registration/open3d_registration.cpp)
-target_link_libraries(open3d_registration ${Open3D_LIBRARIES})
+target_link_libraries(open3d_registration Open3D::Open3D)
 ament_target_dependencies(open3d_registration ${dependencies})
+if(CUDAToolkit_FOUND)
+  target_link_libraries(open3d_registration CUDA::cudart CUDA::cublas CUDA::cublasLt CUDA::cusolver CUDA::nppc)
+endif()
 
 # Open3D conversions library - handles data format conversions
 add_library(open3d_conversions src/open3d_conversions/open3d_conversions.cpp)
-target_link_libraries(open3d_conversions ${Open3D_LIBRARIES})
+target_link_libraries(open3d_conversions Open3D::Open3D)
 ament_target_dependencies(open3d_conversions ${dependencies})
+if(CUDAToolkit_FOUND)
+  target_link_libraries(open3d_conversions CUDA::cudart CUDA::cublas CUDA::cublasLt CUDA::cusolver CUDA::nppc)
+endif()
 
 # ===== Executable Target =====
 # Main localization node executable
 add_executable(global_localization_node src/global_localization_ros2.cpp)
-target_link_libraries(global_localization_node ${Open3D_LIBRARIES})
+target_link_libraries(global_localization_node Open3D::Open3D)
 target_link_libraries(global_localization_node open3d_registration)
 target_link_libraries(global_localization_node open3d_conversions)
 ament_target_dependencies(global_localization_node ${dependencies})
+if(CUDAToolkit_FOUND)
+  target_link_libraries(global_localization_node CUDA::cudart CUDA::cublas CUDA::cublasLt CUDA::cusolver CUDA::nppc)
+endif()
 
 # ===== Installation Configuration =====
 # Install targets to appropriate locations
