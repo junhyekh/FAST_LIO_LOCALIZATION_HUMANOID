@@ -48,13 +48,13 @@ namespace pcd_tools
                                               double voxel_size, int icp_method = 1, std::vector<double> scale = {1.5},
                                               bool multithread_preprocess = true);
 
-    // // Tensor-based single-scale ICP (CPU/CUDA depending on tensor device)
-    // Eigen::Matrix4d RegistrationIcpCUDA(std::shared_ptr<open3d::t::geometry::PointCloud> source,
-    //                                     std::shared_ptr<open3d::t::geometry::PointCloud> target,
-    //                                     double voxel_size,
-    //                                     int icp_method = 1,
-    //                                     Eigen::Matrix4d init_matrix = Eigen::Matrix4d::Identity(),
-    //                                     int icp_iteration = 30);
+    // Tensor-based single-scale ICP (CPU/CUDA depending on tensor device)
+    Eigen::Matrix4d RegistrationIcpCUDA(std::shared_ptr<open3d::t::geometry::PointCloud> source,
+                                        std::shared_ptr<open3d::t::geometry::PointCloud> target,
+                                        double voxel_size,
+                                        int icp_method = 1,
+                                        Eigen::Matrix4d init_matrix = Eigen::Matrix4d::Identity(),
+                                        int icp_iteration = 30);
 
     // // Tensor-based multi-scale ICP (CPU/CUDA depending on tensor device)
     // Eigen::Matrix4d RegistrationMultiScaleIcpCUDA(std::shared_ptr<open3d::t::geometry::PointCloud> source,  

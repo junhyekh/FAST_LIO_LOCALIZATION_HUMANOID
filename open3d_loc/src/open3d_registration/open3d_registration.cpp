@@ -215,49 +215,69 @@ namespace pcd_tools
     }
 
     //////////////////// CUDA ////////////////////
-    // Eigen::Matrix4d RegistrationIcpCUDA(std::shared_ptr<open3d::t::geometry::PointCloud> source,
-    //                                     std::shared_ptr<open3d::t::geometry::PointCloud> target,
-    //                                     double voxel_size,
-    //                                     int icp_method,
-    //                                     Eigen::Matrix4d init_matrix,
-    //                                     int icp_iteration)
-    // {
-    //     using namespace open3d::t::pipelines::registration;
+    Eigen::Matrix4d RegistrationIcpCUDA(std::shared_ptr<open3d::t::geometry::PointCloud> source,
+                                        std::shared_ptr<open3d::t::geometry::PointCloud> target,
+                                        double voxel_size,
+                                        int icp_method,
+                                        Eigen::Matrix4d init_matrix,
+                                        int icp_iteration)
+    {
+        using namespace open3d::t::pipelines::registration;
+        using open3d::core::Dtype;
+        using open3d::core::Float32;
+        using open3d::core::Tensor;
 
-    //     // Ensure normals for point-to-plane
-    //     if (icp_method != 0) {
-    //         if (!target->HasPointNormals()) {
-    //             target->EstimateNormals(open3d::core::Tensor::Init<int64_t>({30}), voxel_size * 2.0);
-    //         }
-    //         if (!source->HasPointNormals()) {
-    //             source->EstimateNormals(open3d::core::Tensor::Init<int64_t>({30}), voxel_size * 2.0);
-    //         }
-    //     }
+        // Ensure Float32 tensors for CUDA speed (positions and normals if present)
+        if (source->GetPointPositions().GetDtype() != Float32) {
+            source->SetPointPositions(source->GetPointPositions().To(Float32));
+        }
+        if (target->GetPointPositions().GetDtype() != Float32) {
+            target->SetPointPositions(target->GetPointPositions().To(Float32));
+        }
+        if (source->HasPointNormals() && source->GetPointNormals().GetDtype() != Float32) {
+            source->SetPointNormals(source->GetPointNormals().To(Float32));
+        }
+        if (target->HasPointNormals() && target->GetPointNormals().GetDtype() != Float32) {
+            target->SetPointNormals(target->GetPointNormals().To(Float32));
+        }
 
-    //     double max_corr = std::max(voxel_size * 1.5, 1e-6);
-    //     ICPConvergenceCriteria criteria(1e-6, 1e-6, icp_iteration);
+        // Ensure normals for point-to-plane using hybrid mode semantics:
+        // radius = 2 * voxel_size, max_nn = 30
+        if (icp_method != 0) {
+            if (!target->HasPointNormals()) {
+                target->EstimateNormals(open3d::core::Tensor::Init<int64_t>({30}), std::max(1e-6, voxel_size * 2.0));
+            }
+            if (!source->HasPointNormals()) {
+                source->EstimateNormals(open3d::core::Tensor::Init<int64_t>({30}), std::max(1e-6, voxel_size * 2.0));
+            }
+        }
 
-    //     // Initial transform tensor
-    //     open3d::core::Tensor init_T = open3d::core::Tensor::FromBlob(
-    //         init_matrix.data(), {4, 4}, open3d::core::Float64, open3d::core::Device("CPU:0"));
+        double max_corr = std::max(voxel_size * 1.5, 1e-6);
+        ICPConvergenceCriteria criteria(1e-6, 1e-6, icp_iteration);
 
-    //     RegistrationResult result;
-    //     if (icp_method == 0) {
-    //         TransformationEstimationPointToPoint estimation;
-    //         result = ICP(*source, *target, max_corr, init_T, estimation, criteria);
-    //     } else if (icp_method == 1) {
-    //         TransformationEstimationPointToPlane estimation;
-    //         result = ICP(*source, *target, max_corr, init_T, estimation, criteria);
-    //     } else { // icp_method == 2 -> point-to-plane with TukeyLoss
-    //         RobustKernel kernel(RobustKernelMethod::TukeyLoss, 4.6851);
-    //         TransformationEstimationPointToPlane estimation(kernel);
-    //         result = ICP(*source, *target, max_corr, init_T, estimation, criteria);
-    //     }
+        // Initial transform tensor
+        open3d::core::Tensor init_T = open3d::core::Tensor::FromBlob(
+            init_matrix.data(), {4, 4}, open3d::core::Float64, open3d::core::Device("CPU:0"));
 
-    //     open3d::core::Tensor T_cpu = result.transformation_.To(open3d::core::Device("CPU:0"), open3d::core::Float64).Contiguous();
-    //     Eigen::Matrix4d T = Eigen::Map<Eigen::Matrix<double, 4, 4, Eigen::RowMajor>>(T_cpu.GetDataPtr<double>());
-    //     return T;
-    // }
+        RegistrationResult result;
+        if (icp_method == 0) {
+            TransformationEstimationPointToPoint estimation;
+            result = ICP(*source, *target, max_corr, init_T, estimation, criteria);
+        } else if (icp_method == 1) {
+            TransformationEstimationPointToPlane estimation;
+            result = ICP(*source, *target, max_corr, init_T, estimation, criteria);
+        } else { // icp_method == 2 -> point-to-plane with TukeyLoss
+            // not used     
+            std::cout << "ICP with robust kernel is not used for now" << std::endl;
+            // RobustKernel kernel(RobustKernelMethod::TukeyLoss, 4.6851);
+            // TransformationEstimationPointToPlane estimation(kernel);
+            // result = ICP(*source, *target, max_corr, init_T, estimation, criteria);
+        }
+
+        open3d::core::Tensor T_cpu = result.transformation_.To(open3d::core::Device("CPU:0"), open3d::core::Float64).Contiguous();
+        Eigen::Matrix4d T = Eigen::Map<Eigen::Matrix<double, 4, 4, Eigen::RowMajor>>(T_cpu.GetDataPtr<double>());
+        return T;
+    }
 
     // Eigen::Matrix4d RegistrationMultiScaleIcpCUDA(std::shared_ptr<open3d::t::geometry::PointCloud> source,
     //                                           std::shared_ptr<open3d::t::geometry::PointCloud> target,
