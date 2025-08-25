@@ -118,17 +118,17 @@ namespace pcd_tools
             num_pair = 1;
         }
         // vec_pcd
-        {
-            std::ostringstream oss;
-            oss << "RegistrationMultiScaleIcp start with voxel_sizes: ";
-            for (size_t i = 0; i < vec_voxel_size.size(); ++i) {
-                oss << vec_voxel_size[i];
-                if (i != vec_voxel_size.size() - 1) {
-                    oss << ", ";
-                }
-            }
-            std::cout << oss.str() << std::endl;
-        }
+        // {
+        //     std::ostringstream oss;
+        //     oss << "RegistrationMultiScaleIcp start with voxel_sizes: ";
+        //     for (size_t i = 0; i < vec_voxel_size.size(); ++i) {
+        //         oss << vec_voxel_size[i];
+        //         if (i != vec_voxel_size.size() - 1) {
+        //             oss << ", ";
+        //         }
+        //     }
+        //     std::cout << oss.str() << std::endl;
+        // }
         auto pcd_preprocess = [&](int pcd_i)
         {
             std::chrono::high_resolution_clock::time_point preprocess_s = std::chrono::high_resolution_clock::now();
@@ -164,7 +164,7 @@ namespace pcd_tools
                 std::cerr << "Preprocess failed at scale index " << pcd_i << ": " << e.what() << std::endl;
                 throw; // rethrow to surface error
             }
-            std::cout << "target points size: " << vec_pcd_pair[pcd_i].pcd_tgt->points_.size() << std::endl;
+            // std::cout << "target points size: " << vec_pcd_pair[pcd_i].pcd_tgt->points_.size() << std::endl;
 
             std::chrono::high_resolution_clock::time_point preprocess_e = std::chrono::high_resolution_clock::now();
             auto preprocess_cost = std::chrono::duration_cast<std::chrono::milliseconds>(preprocess_e - preprocess_s).count();
@@ -245,19 +245,20 @@ namespace pcd_tools
         // radius = 2 * voxel_size, max_nn = 30
         if (icp_method != 0) {
             if (!target->HasPointNormals()) {
-                target->EstimateNormals(open3d::core::Tensor::Init<int64_t>({30}), std::max(1e-6, voxel_size * 2.0));
+                target->EstimateNormals(open3d::utility::optional<int>(30), open3d::utility::optional<double>(std::max(1e-6, voxel_size * 2.0)));
             }
             if (!source->HasPointNormals()) {
-                source->EstimateNormals(open3d::core::Tensor::Init<int64_t>({30}), std::max(1e-6, voxel_size * 2.0));
+                source->EstimateNormals(open3d::utility::optional<int>(30), open3d::utility::optional<double>(std::max(1e-6, voxel_size * 2.0)));
             }
         }
 
         double max_corr = std::max(voxel_size * 1.5, 1e-6);
         ICPConvergenceCriteria criteria(1e-6, 1e-6, icp_iteration);
 
-        // Initial transform tensor
-        open3d::core::Tensor init_T = open3d::core::Tensor::FromBlob(
-            init_matrix.data(), {4, 4}, open3d::core::Float64, open3d::core::Device("CPU:0"));
+        // Initial transform tensor (construct from std::vector to support older Open3D versions)
+        std::vector<double> init_vec(16);
+        Eigen::Map<Eigen::Matrix<double, 4, 4, Eigen::RowMajor>>(init_vec.data()) = init_matrix;
+        open3d::core::Tensor init_T(init_vec, {4, 4}, open3d::core::Float64, open3d::core::Device("CPU:0"));
 
         RegistrationResult result;
         if (icp_method == 0) {

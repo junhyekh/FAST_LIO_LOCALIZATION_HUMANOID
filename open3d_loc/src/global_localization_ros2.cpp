@@ -248,6 +248,9 @@ private:
     bool save_scan_;                         ///< Whether to save scan data to file
     std::string path_map_;                   ///< Path to the map file (.ply format)
     double loc_frequence_;                   ///< Localization frequency in Hz
+    std::vector<double> voxel_scales_;       ///< Multiscale voxel factors for initialization/ICP
+    int num_trial_init_ = 0;                 ///< Max number of re-initialization trials on timeout
+    bool use_cuda_ = false;                  ///< Whether to use CUDA ICP path when available
 
     // ===== Point Cloud Processing Limits =====
     
@@ -365,6 +368,7 @@ GlobalLocalization::GlobalLocalization() : Node("global_localization_node")
     dis_updatemap_ = this->get_parameter("dis_updatemap").as_double();
     voxel_scales_ = this->get_parameter("voxel_scales").as_double_array();
     use_cuda_ = this->get_parameter("use_cuda").as_bool();
+    num_trial_init_ = this->get_parameter("num_trial_init").as_int();
 
     // Retrieve Kalman filter params if provided
     {
@@ -587,6 +591,7 @@ void GlobalLocalization::LocalizationInitialize()
                     Eigen::Matrix4d random_matrix = Eigen::Matrix4d::Identity();
                     // Sample random yaw in [0, pi)
                     double random_yaw = static_cast<double>(rand()) / static_cast<double>(RAND_MAX) * M_PI;
+                    RCLCPP_WARN(this->get_logger(), "random_yaw: %.3f on num trial %d", random_yaw, num_trial);
                     random_matrix.block<3,3>(0,0) = Eigen::AngleAxisd(random_yaw, Eigen::Vector3d::UnitZ()).toRotationMatrix();
                     {
                         std::lock_guard<std::mutex> lk(lock_mat_odom2map_);
@@ -699,9 +704,9 @@ void GlobalLocalization::LocalizationInitialize()
                 count_success = 0;
                 if (fitness_initial > best_fitness) {
                     best_fitness = fitness_initial;
-                    best_reg_matrix = reg_matrix;
+                    best_reg_matrix = mat_odom2map_;
                 }
-                RCLCPP_WARN(this->get_logger(), "Initial localization failed (fitness %.3f)", fitness_initial);
+                RCLCPP_WARN(this->get_logger(), "Initial localization failed (fitness %.3f). Retrying...", fitness_initial);
             }
         }
     }

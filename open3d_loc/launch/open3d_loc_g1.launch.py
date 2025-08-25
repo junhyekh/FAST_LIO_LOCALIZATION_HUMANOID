@@ -163,7 +163,9 @@ def generate_launch_description():
             
             # Quality control
             {'confidence_loc_th': 0.7},       # Confidence threshold for localization
-            {'dis_updatemap': 3.5}            # Distance threshold for map updates (meters)
+            {'dis_updatemap': 3.5},            # Distance threshold for map updates (meters)
+
+            {'use_cuda': True} # use cuda for icp
         ]
     )
 
