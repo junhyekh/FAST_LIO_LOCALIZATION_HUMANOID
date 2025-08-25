@@ -146,7 +146,7 @@ def generate_launch_description():
             {'threshold_fitness_init': 0.9},  # Minimum fitness score for initialization
             
             # System timing
-            {'loc_frequence': 2.5},           # Localization frequency (Hz)
+            {'loc_frequence': 10.0},           # Localization frequency (Hz)
             
             # Data processing options
             {'save_scan': False},             # Whether to save scan data to files
