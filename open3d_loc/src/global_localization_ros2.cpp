@@ -617,6 +617,8 @@ void GlobalLocalization::LocalizationInitialize()
 
         // ================================================================
         // Phase 1: FPFH global alignment (repeat until convergence)
+        // Uses full map (pcd_map_coarse_) and full scan — no OBB crop,
+        // so it works independently of initial pose estimate.
         // ================================================================
         RCLCPP_INFO(this->get_logger(), "=== Phase 1: FPFH global alignment ===");
         bool fpfh_converged = false;
@@ -638,19 +640,41 @@ void GlobalLocalization::LocalizationInitialize()
                 }
             }
 
-            // Prepare point clouds
-            {
-                std::lock_guard<std::mutex> lk(lock_mat_odom2map_);
-                if (!prepareClouds()) continue;
+            // Wait for scan data (no OBB crop — use full scan)
+            lock_scan_.lock();
+            if (pcd_scan_cur_->IsEmpty()) {
+                lock_scan_.unlock();
+                open3d::utility::LogInfo("wait for pcd_scan_cur_");
+                std::this_thread::sleep_for(std::chrono::milliseconds(20));
+                continue;
+            }
+            *pcd_scan = *pcd_scan_cur_;
+            lock_scan_.unlock();
+
+            // source = full scan (downsample for speed)
+            auto fpfh_source = pcd_scan;
+            if (fpfh_source->points_.size() > static_cast<size_t>(maxpoints_source_)) {
+                fpfh_source = fpfh_source->RandomDownSample(double(maxpoints_source_) / fpfh_source->points_.size());
+            }
+            // target = full coarse map (already downsampled with voxelsize_coarse_)
+            auto fpfh_target = pcd_map_coarse_;
+
+            if (fpfh_source->points_.empty() || fpfh_target->points_.empty()) {
+                RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
+                    "FPFH skipped: empty source (%zu) or target (%zu)", fpfh_source->points_.size(), fpfh_target->points_.size());
+                continue;
             }
 
-            // FPFH+RANSAC: source is in odom frame, target is in map frame
+            // FPFH+RANSAC: source (odom frame) → target (map frame), no initial guess needed
             try {
-                double fpfh_voxel = voxelsize_fine_ * 2.0;
-                auto src_down = source->VoxelDownSample(fpfh_voxel);
-                auto tgt_down = target->VoxelDownSample(fpfh_voxel);
+                double fpfh_voxel = voxelsize_coarse_;
+                auto src_down = fpfh_source->VoxelDownSample(fpfh_voxel);
+                auto tgt_down = fpfh_target;  // already downsampled at voxelsize_coarse_
                 src_down->EstimateNormals(open3d::geometry::KDTreeSearchParamHybrid(fpfh_voxel * 2.0, 30));
-                tgt_down->EstimateNormals(open3d::geometry::KDTreeSearchParamHybrid(fpfh_voxel * 2.0, 30));
+                // tgt normals already estimated during map loading, but re-check
+                if (!tgt_down->HasNormals()) {
+                    tgt_down->EstimateNormals(open3d::geometry::KDTreeSearchParamHybrid(fpfh_voxel * 2.0, 30));
+                }
                 auto src_fpfh = open3d::pipelines::registration::ComputeFPFHFeature(
                     *src_down, open3d::geometry::KDTreeSearchParamHybrid(fpfh_voxel * 5.0, 100));
                 auto tgt_fpfh = open3d::pipelines::registration::ComputeFPFHFeature(
@@ -667,7 +691,7 @@ void GlobalLocalization::LocalizationInitialize()
                     RCLCPP_INFO(this->get_logger(), "FPFH converged (fitness %.3f). Moving to Phase 2.", fpfh_result.fitness_);
 
                     // Publish FPFH result for visualization
-                    auto source_vis = std::make_shared<open3d::geometry::PointCloud>(*source);
+                    auto source_vis = std::make_shared<open3d::geometry::PointCloud>(*fpfh_source);
                     source_vis->Transform(fpfh_result.transformation_);
                     sensor_msgs::msg::PointCloud2 source_msg;
                     open3d_conversions::open3dToRos(*source_vis, source_msg, "map");
