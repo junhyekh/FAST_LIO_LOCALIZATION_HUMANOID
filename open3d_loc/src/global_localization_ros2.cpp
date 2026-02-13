@@ -703,18 +703,33 @@ void GlobalLocalization::LocalizationInitialize()
                 // close to the known initialpose values (e.g., roll=-180° for flipped IMU).
                 // FPFH searches 6DoF freely, so we correct pitch/roll if they deviate
                 // more than ±5° from the reference (initialpose param).
+                //
+                // We avoid Eigen::eulerAngles() because it always returns angles in [0,π]
+                // which misrepresents -180° roll. Instead we use atan2-based extraction.
                 Eigen::Matrix4d T_fpfh = fpfh_result.transformation_;
                 {
-                    // Reference pitch/roll from initialpose parameter (e.g., roll=-180°, pitch=0°)
-                    Eigen::Vector3d euler_ref = mat_initialpose_.block<3,3>(0,0).eulerAngles(2, 1, 0); // [yaw, pitch, roll]
-                    double pitch_ref = euler_ref[1];
-                    double roll_ref = euler_ref[2];
+                    // atan2-based RPY extraction (roll-pitch-yaw, intrinsic X-Y-Z)
+                    // Given R = Rz(yaw) * Ry(pitch) * Rx(roll):
+                    //   pitch = atan2(-R(2,0), sqrt(R(0,0)^2 + R(1,0)^2))
+                    //   roll  = atan2(R(2,1), R(2,2))
+                    //   yaw   = atan2(R(1,0), R(0,0))
+                    auto extractRPY = [](const Eigen::Matrix3d &R) -> Eigen::Vector3d {
+                        double pitch = std::atan2(-R(2,0), std::sqrt(R(0,0)*R(0,0) + R(1,0)*R(1,0)));
+                        double roll  = std::atan2(R(2,1), R(2,2));
+                        double yaw   = std::atan2(R(1,0), R(0,0));
+                        return Eigen::Vector3d(roll, pitch, yaw);
+                    };
 
-                    // Extract FPFH euler angles (ZYX convention: yaw, pitch, roll)
-                    Eigen::Vector3d euler_fpfh = T_fpfh.block<3,3>(0,0).eulerAngles(2, 1, 0);
-                    double yaw_fpfh = euler_fpfh[0];
-                    double pitch_fpfh = euler_fpfh[1];
-                    double roll_fpfh = euler_fpfh[2];
+                    // Reference pitch/roll from initialpose (e.g., roll=-180°, pitch=0°)
+                    Eigen::Vector3d rpy_ref = extractRPY(mat_initialpose_.block<3,3>(0,0));
+                    double roll_ref  = rpy_ref[0];  // e.g. -π
+                    double pitch_ref = rpy_ref[1];  // e.g. 0
+
+                    // FPFH result pitch/roll
+                    Eigen::Vector3d rpy_fpfh = extractRPY(T_fpfh.block<3,3>(0,0));
+                    double roll_fpfh  = rpy_fpfh[0];
+                    double pitch_fpfh = rpy_fpfh[1];
+                    double yaw_fpfh   = rpy_fpfh[2];  // keep this
 
                     // Normalize angle difference to [-pi, pi]
                     auto normalize = [](double a) -> double {
