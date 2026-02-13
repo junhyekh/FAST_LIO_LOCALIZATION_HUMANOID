@@ -573,169 +573,184 @@ void GlobalLocalization::LocalizationInitialize()
         OBB_scan->extent_ = Eigen::Vector3d(60, 60, 40);
         OBB_scan->color_ = Eigen::Vector3d(0, 1, 0);
 
-        int count_success = 0;
-        double fitness_initial = 0.0;
-        auto t_start = std::chrono::high_resolution_clock::now();
-        int num_trial = 0;
-        Eigen::Matrix4d best_reg_matrix = Eigen::Matrix4d::Identity();
-        double best_fitness = 0.0;
-        while (rclcpp::ok()) {
-            // Timeout guard
-            auto t_now = std::chrono::high_resolution_clock::now();
-            double elapsed_s = std::chrono::duration_cast<std::chrono::milliseconds>(t_now - t_start).count() / 1000.0;
-            if (elapsed_s > init_loc_timeout_s_) {
-                RCLCPP_WARN(this->get_logger(), "Initial localization timeout (%.2f s).", elapsed_s);
-                // reset the timer and try again
-                if (num_trial < num_trial_init_) {
-                    num_trial += 1;
-                    t_start = std::chrono::high_resolution_clock::now();
-                    // apply random yaw rotation to the current odom2map
-                    Eigen::Matrix4d random_matrix = Eigen::Matrix4d::Identity();
-                    // Sample random yaw in [0, pi)
-                    double random_yaw = static_cast<double>(rand()) / static_cast<double>(RAND_MAX) * M_PI;
-                    RCLCPP_WARN(this->get_logger(), "random_yaw: %.3f on num trial %d", random_yaw, num_trial);
-                    random_matrix.block<3,3>(0,0) = Eigen::AngleAxisd(random_yaw, Eigen::Vector3d::UnitZ()).toRotationMatrix();
-                    {
-                        std::lock_guard<std::mutex> lk(lock_mat_odom2map_);
-                        mat_odom2map_ = random_matrix * mat_odom2map_;
-                    }
-                } else {
-                    RCLCPP_WARN(this->get_logger(), "Initial localization failed with num_trial %d (fitness %.3f).", num_trial, best_fitness);
-                    {
-                        std::lock_guard<std::mutex> lk(lock_mat_odom2map_);
-                        mat_odom2map_ = best_reg_matrix;
-                    }
-                    break;
-                }
-            }
-
-            // Build a scan from the pending queue (accumulate like ROS1)
+        // Helper lambda: wait for scan data and prepare source/target point clouds
+        auto prepareClouds = [&]() -> bool {
             lock_scan_.lock();
-            if (pcd_scan_cur_->IsEmpty()) { 
+            if (pcd_scan_cur_->IsEmpty()) {
                 lock_scan_.unlock();
                 open3d::utility::LogInfo("wait for pcd_scan_cur_");
                 std::this_thread::sleep_for(std::chrono::milliseconds(20));
-                continue;
+                return false;
             }
             *pcd_scan = *pcd_scan_cur_;
             lock_scan_.unlock();
 
-            // Update estimate under mutex
+            Eigen::Matrix4d mat_baselink2odom_cur = mat_baselink2odom_;
+            Eigen::Matrix4d mat_baselink2map_cur = mat_baselink2map_;
+
+            OBB_map->center_ = mat_baselink2map_cur.block<3,1>(0,3);
+            OBB_map->R_ = mat_baselink2map_cur.block<3,3>(0,0);
+            OBB_scan->center_ = mat_baselink2odom_cur.block<3,1>(0,3);
+            OBB_scan->R_ = mat_baselink2odom_cur.block<3,3>(0,0);
+
+            *map_fine_crop = *pcd_map_fine_->Crop(*OBB_map);
+            *target = *map_fine_crop;
+            if (target->points_.size() > static_cast<size_t>(maxpoints_target_)) {
+                target = target->RandomDownSample(double(maxpoints_target_) / target->points_.size());
+            }
+            source = pcd_scan->Crop(*OBB_scan);
+            if (source->points_.size() > static_cast<size_t>(maxpoints_source_)) {
+                source = source->RandomDownSample(double(maxpoints_source_) / source->points_.size());
+            }
+            if (target->points_.empty() || source->points_.empty()) {
+                RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
+                    "Init skipped: empty target (%zu) or source (%zu)", target->points_.size(), source->points_.size());
+                return false;
+            }
+            // Publish target submap for visualization
+            sensor_msgs::msg::PointCloud2 target_msg;
+            open3d_conversions::open3dToRos(*target, target_msg, "map");
+            target_msg.header.stamp = this->now();
+            pub_submap_->publish(target_msg);
+            return true;
+        };
+
+        // ================================================================
+        // Phase 1: FPFH global alignment (repeat until convergence)
+        // ================================================================
+        RCLCPP_INFO(this->get_logger(), "=== Phase 1: FPFH global alignment ===");
+        bool fpfh_converged = false;
+        int fpfh_trial = 0;
+        auto t_fpfh_start = std::chrono::high_resolution_clock::now();
+
+        while (rclcpp::ok() && !fpfh_converged) {
+            // Timeout guard for FPFH phase
+            auto t_now = std::chrono::high_resolution_clock::now();
+            double elapsed_s = std::chrono::duration_cast<std::chrono::milliseconds>(t_now - t_fpfh_start).count() / 1000.0;
+            if (elapsed_s > init_loc_timeout_s_) {
+                if (fpfh_trial < num_trial_init_) {
+                    fpfh_trial += 1;
+                    t_fpfh_start = std::chrono::high_resolution_clock::now();
+                    RCLCPP_WARN(this->get_logger(), "FPFH timeout (%.1fs). Retrying trial %d / %d", elapsed_s, fpfh_trial, num_trial_init_);
+                } else {
+                    RCLCPP_WARN(this->get_logger(), "FPFH failed after %d trials. Proceeding to ICP with current estimate.", fpfh_trial);
+                    break;
+                }
+            }
+
+            // Prepare point clouds
             {
                 std::lock_guard<std::mutex> lk(lock_mat_odom2map_);
+                if (!prepareClouds()) continue;
+            }
 
-                // Snapshot transforms
-                Eigen::Matrix4d mat_baselink2odom_cur = mat_baselink2odom_;
-                Eigen::Matrix4d mat_baselink2map_cur = mat_baselink2map_;
+            // FPFH+RANSAC: source is in odom frame, target is in map frame
+            try {
+                double fpfh_voxel = voxelsize_fine_ * 2.0;
+                auto src_down = source->VoxelDownSample(fpfh_voxel);
+                auto tgt_down = target->VoxelDownSample(fpfh_voxel);
+                src_down->EstimateNormals(open3d::geometry::KDTreeSearchParamHybrid(fpfh_voxel * 2.0, 30));
+                tgt_down->EstimateNormals(open3d::geometry::KDTreeSearchParamHybrid(fpfh_voxel * 2.0, 30));
+                auto src_fpfh = open3d::pipelines::registration::ComputeFPFHFeature(
+                    *src_down, open3d::geometry::KDTreeSearchParamHybrid(fpfh_voxel * 5.0, 100));
+                auto tgt_fpfh = open3d::pipelines::registration::ComputeFPFHFeature(
+                    *tgt_down, open3d::geometry::KDTreeSearchParamHybrid(fpfh_voxel * 5.0, 100));
+                auto fpfh_result = pcd_tools::RegistrationFpfh(src_down, tgt_down, src_fpfh, tgt_fpfh, fpfh_voxel, true);
 
-                // Prepare OBBs around current estimates
-                OBB_map->center_ = mat_baselink2map_cur.block<3,1>(0,3);
-                OBB_map->R_ = mat_baselink2map_cur.block<3,3>(0,0);
-                OBB_scan->center_ = mat_baselink2odom_cur.block<3,1>(0,3);
-                OBB_scan->R_ = mat_baselink2odom_cur.block<3,3>(0,0);
+                RCLCPP_INFO(this->get_logger(), "FPFH result: fitness %.3f, RMSE %.4f",
+                            fpfh_result.fitness_, fpfh_result.inlier_rmse_);
 
-                *map_fine_crop = *pcd_map_fine_->Crop(*OBB_map);
+                if (fpfh_result.fitness_ > threshold_fitness_init_) {
+                    std::lock_guard<std::mutex> lk(lock_mat_odom2map_);
+                    mat_odom2map_ = fpfh_result.transformation_;
+                    fpfh_converged = true;
+                    RCLCPP_INFO(this->get_logger(), "FPFH converged (fitness %.3f). Moving to Phase 2.", fpfh_result.fitness_);
 
-                // Initial registration matrix starts from current odom->map estimate
-                Eigen::Matrix4d reg_matrix = Eigen::Matrix4d::Identity();
+                    // Publish FPFH result for visualization
+                    auto source_vis = std::make_shared<open3d::geometry::PointCloud>(*source);
+                    source_vis->Transform(fpfh_result.transformation_);
+                    sensor_msgs::msg::PointCloud2 source_msg;
+                    open3d_conversions::open3dToRos(*source_vis, source_msg, "map");
+                    source_msg.header.stamp = this->now();
+                    pub_scan2map_->publish(source_msg);
+                }
+            } catch (const std::exception &e) {
+                RCLCPP_WARN(this->get_logger(), "FPFH failed: %s", e.what());
+            }
+        }
+
+        // ================================================================
+        // Phase 2: MultiScale ICP fine alignment (time-limited, like original)
+        // ================================================================
+        RCLCPP_INFO(this->get_logger(), "=== Phase 2: MultiScale ICP refinement (%.1f s) ===", init_loc_timeout_s_);
+        int count_success = 0;
+        double fitness_icp = 0.0;
+        Eigen::Matrix4d best_reg_matrix = mat_odom2map_;
+        double best_fitness = 0.0;
+        auto t_icp_start = std::chrono::high_resolution_clock::now();
+
+        while (rclcpp::ok()) {
+            // Timeout → done
+            auto t_now = std::chrono::high_resolution_clock::now();
+            double elapsed_s = std::chrono::duration_cast<std::chrono::milliseconds>(t_now - t_icp_start).count() / 1000.0;
+            if (elapsed_s > init_loc_timeout_s_) {
+                RCLCPP_WARN(this->get_logger(), "ICP phase timeout (%.1f s). Best fitness: %.3f", elapsed_s, best_fitness);
+                {
+                    std::lock_guard<std::mutex> lk(lock_mat_odom2map_);
+                    mat_odom2map_ = best_reg_matrix;
+                }
+                break;
+            }
+
+            // Prepare point clouds
+            Eigen::Matrix4d reg_matrix;
+            {
+                std::lock_guard<std::mutex> lk(lock_mat_odom2map_);
+                if (!prepareClouds()) continue;
                 reg_matrix = mat_odom2map_;
-                // Enforce proper homogeneous form to avoid w=0 issues in Open3D Transform
-                // reg_matrix.row(3) = Eigen::Vector4d(0.0, 0.0, 0.0, 1.0);
+            }
 
+            // Apply current odom→map, then MultiScale ICP
+            source->Transform(reg_matrix);
+            *pcd_scan2map = *source;
 
-                *target = *map_fine_crop;
-                sensor_msgs::msg::PointCloud2 target_msg;
-                // Convert using reusable helper
-                open3d_conversions::open3dToRos(*target, target_msg, "map");
-                target_msg.header.stamp = this->now();
-                pub_submap_->publish(target_msg);
-                
-                if (target->points_.size() > static_cast<size_t>(maxpoints_target_)) {
-                    target = target->RandomDownSample(double(maxpoints_target_) / target->points_.size());
-                }
+            sensor_msgs::msg::PointCloud2 source_msg;
+            open3d_conversions::open3dToRos(*source, source_msg, "map");
+            source_msg.header.stamp = this->now();
+            pub_scan2map_->publish(source_msg);
 
-                source = pcd_scan->Crop(*OBB_scan);
-                if (source->points_.size() > static_cast<size_t>(maxpoints_source_)) {
-                    source = source->RandomDownSample(double(maxpoints_source_) / source->points_.size());
-                }
+            try {
+                auto icp_matrix = pcd_tools::RegistrationMultiScaleIcp(source, target, voxelsize_fine_, 1, voxel_scales_, true);
+                reg_matrix = icp_matrix * reg_matrix;
+                source->Transform(icp_matrix);
+            } catch (const std::exception &e) {
+                RCLCPP_WARN(this->get_logger(), "RegistrationMultiScaleIcp failed: %s", e.what());
+                continue;
+            }
 
-                if (target->points_.empty() || source->points_.empty()) {
-                    RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000, "Init ICP skipped: empty target (%zu) or source (%zu)", target->points_.size(), source->points_.size());
-                    continue;
-                }
-                // sensor_msgs::msg::PointCloud2 source_msg;
-                // open3d_conversions::open3dToRos(*source, source_msg, "map");
-                // source_msg.header.stamp = this->now();
-                // pub_scan2map_->publish(source_msg);
-                // source_msg.header.frame_id = "camera_init";
-                // pub_scan_->publish(source_msg);
+            auto eva_result = open3d::pipelines::registration::EvaluateRegistration(*source, *target, std::max(1e-3, voxelsize_fine_ * 3));
+            fitness_icp = eva_result.fitness_;
 
-                // Apply current transform, then FPFH coarse + multiscale ICP
-                source->Transform(reg_matrix);
-                *pcd_scan2map = *source;
-
-                sensor_msgs::msg::PointCloud2 source_msg;
-                open3d_conversions::open3dToRos(*source, source_msg, "map");
-                source_msg.header.stamp = this->now();
-                pub_scan2map_->publish(source_msg);
-
-                // --- FPFH coarse alignment ---
-                try {
-                    double fpfh_voxel = voxelsize_fine_ * 2.0;
-                    auto src_down = source->VoxelDownSample(fpfh_voxel);
-                    auto tgt_down = target->VoxelDownSample(fpfh_voxel);
-                    src_down->EstimateNormals(open3d::geometry::KDTreeSearchParamHybrid(fpfh_voxel * 2.0, 30));
-                    tgt_down->EstimateNormals(open3d::geometry::KDTreeSearchParamHybrid(fpfh_voxel * 2.0, 30));
-                    auto src_fpfh = open3d::pipelines::registration::ComputeFPFHFeature(
-                        *src_down, open3d::geometry::KDTreeSearchParamHybrid(fpfh_voxel * 5.0, 100));
-                    auto tgt_fpfh = open3d::pipelines::registration::ComputeFPFHFeature(
-                        *tgt_down, open3d::geometry::KDTreeSearchParamHybrid(fpfh_voxel * 5.0, 100));
-                    auto fpfh_result = pcd_tools::RegistrationFpfh(src_down, tgt_down, src_fpfh, tgt_fpfh, fpfh_voxel, true);
-                    if (fpfh_result.fitness_ > 0.1) {
-                        // Apply FPFH coarse transform
-                        reg_matrix = fpfh_result.transformation_ * reg_matrix;
-                        source->Transform(fpfh_result.transformation_);
-                        RCLCPP_INFO(this->get_logger(), "FPFH coarse alignment: fitness %.3f, RMSE %.4f",
-                                    fpfh_result.fitness_, fpfh_result.inlier_rmse_);
-                    } else {
-                        RCLCPP_WARN(this->get_logger(), "FPFH coarse alignment poor (fitness %.3f), skipping", fpfh_result.fitness_);
-                    }
-                } catch (const std::exception &e) {
-                    RCLCPP_WARN(this->get_logger(), "FPFH coarse alignment failed: %s. Proceeding with ICP only.", e.what());
-                }
-
-                // --- MultiScale ICP fine alignment ---
-                try {
-                    auto multiScale_reg_matrix = pcd_tools::RegistrationMultiScaleIcp(source, target, voxelsize_fine_, 1, voxel_scales_, true);
-                    reg_matrix = multiScale_reg_matrix * reg_matrix;
-                    source->Transform(multiScale_reg_matrix);
-                } catch (const std::exception &e) {
-                    RCLCPP_WARN(this->get_logger(), "RegistrationMultiScaleIcp failed: %s", e.what());
-                    continue;
-                }
-
-                auto eva_result = open3d::pipelines::registration::EvaluateRegistration(*source, *target, std::max(1e-3, voxelsize_fine_ * 3));
-                fitness_initial = eva_result.fitness_;
-                *pcd_scan2map = *source;
-
-                // Final guard: keep odom->map homogeneous
-                reg_matrix.row(3) = Eigen::Vector4d(0.0, 0.0, 0.0, 1.0);
+            reg_matrix.row(3) = Eigen::Vector4d(0.0, 0.0, 0.0, 1.0);
+            {
+                std::lock_guard<std::mutex> lk(lock_mat_odom2map_);
                 mat_odom2map_ = reg_matrix;
             }
 
-            if (fitness_initial > threshold_fitness_init_) {
+            if (fitness_icp > best_fitness) {
+                best_fitness = fitness_icp;
+                best_reg_matrix = reg_matrix;
+            }
+
+            if (fitness_icp > threshold_fitness_init_) {
                 count_success += 1;
                 if (count_success >= 2) {
-                    RCLCPP_INFO(this->get_logger(), "Initial localization succeeded (fitness %.3f)", fitness_initial);
+                    RCLCPP_INFO(this->get_logger(), "ICP converged (fitness %.3f, %d consecutive successes)", fitness_icp, count_success);
                     break;
                 }
             } else {
                 count_success = 0;
-                if (fitness_initial > best_fitness) {
-                    best_fitness = fitness_initial;
-                    best_reg_matrix = mat_odom2map_;
-                }
-                RCLCPP_WARN(this->get_logger(), "Initial localization failed (fitness %.3f). Retrying...", fitness_initial);
+                RCLCPP_WARN(this->get_logger(), "ICP iteration fitness %.3f (best %.3f). Continuing...", fitness_icp, best_fitness);
             }
         }
     }
