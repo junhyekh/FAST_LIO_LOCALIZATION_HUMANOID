@@ -245,10 +245,10 @@ namespace pcd_tools
         // radius = 2 * voxel_size, max_nn = 30
         if (icp_method != 0) {
             if (!target->HasPointNormals()) {
-                target->EstimateNormals(open3d::utility::optional<int>(30), open3d::utility::optional<double>(std::max(1e-6, voxel_size * 2.0)));
+                target->EstimateNormals(30, open3d::utility::optional<double>(std::max(1e-6, voxel_size * 2.0)));
             }
             if (!source->HasPointNormals()) {
-                source->EstimateNormals(open3d::utility::optional<int>(30), open3d::utility::optional<double>(std::max(1e-6, voxel_size * 2.0)));
+                source->EstimateNormals(30, open3d::utility::optional<double>(std::max(1e-6, voxel_size * 2.0)));
             }
         }
 

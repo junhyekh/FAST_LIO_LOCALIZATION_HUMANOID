@@ -21,6 +21,8 @@ if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release)
 endif()
 
+add_compile_definitions(_GLIBCXX_USE_CXX11_ABI=1)
+
 # Compiler flags for optimization and C++17 standard
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3")
 set(CMAKE_CXX_STANDARD 17)
@@ -29,6 +31,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 # ===== Open3D Configuration =====
 # Avoid hardcoding Open3D_DIR; rely on system or user-provided CMAKE_PREFIX_PATH
+set(Open3D_DIR "/root/GP/open3d_install/usr/local/lib/cmake/Open3D" CACHE PATH "" FORCE)
 find_package(Open3D REQUIRED)
 
 # ===== ROS2 Dependencies =====
@@ -51,6 +54,7 @@ find_package(tf2_geometry_msgs REQUIRED)
 # Point cloud processing packages
 find_package(pcl_ros REQUIRED)
 find_package(pcl_conversions REQUIRED)
+find_package(libstatistics_collector REQUIRED)
 
 # Interface generation
 # find_package(rosidl_default_generators REQUIRED)
@@ -71,6 +75,7 @@ find_package(CUDAToolkit QUIET)
 set(dependencies
   rclcpp
   rclcpp_components
+  libstatistics_collector
   geometry_msgs
   nav_msgs
   sensor_msgs
@@ -124,6 +129,7 @@ add_executable(global_localization_node src/global_localization_ros2.cpp)
 target_link_libraries(global_localization_node Open3D::Open3D)
 target_link_libraries(global_localization_node open3d_registration)
 target_link_libraries(global_localization_node open3d_conversions)
+target_link_libraries(global_localization_node /opt/ros/foxy/lib/libstatistics_collector.so)
 ament_target_dependencies(global_localization_node ${dependencies})
 if(CUDAToolkit_FOUND)
   target_link_libraries(global_localization_node CUDA::cudart CUDA::cublas CUDA::cublasLt CUDA::cusolver CUDA::nppc)

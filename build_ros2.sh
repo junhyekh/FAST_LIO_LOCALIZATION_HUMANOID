@@ -56,26 +56,26 @@ print_status "Installing ROS2 dependencies..."
 rosdep install --from-paths . --ignore-src -y
 
 # Build Livox ROS2 driver first
-print_status "Building Livox ROS2 driver..."
-cd third_party/livox_ros_driver2
-if [ -d "build" ] || [ -d "install" ]; then
-    print_warning "Cleaning previous build..."
-    rm -rf build install log
-fi
-colcon build --symlink-install
-source install/setup.bash
-cd ../..
+# print_status "Building Livox ROS2 driver..."
+# cd third_party/livox_ros_driver2
+# if [ -d "build" ] || [ -d "install" ]; then
+#     print_warning "Cleaning previous build..."
+#     rm -rf build install log
+# fi
+# colcon build --symlink-install
+# source install/setup.bash
+# cd ../..
 
 # Build FAST-LIO ROS2
-print_status "Building FAST-LIO ROS2..."
-cd third_party/FAST_LIO_ROS2
-if [ -d "build" ] || [ -d "install" ]; then
-    print_warning "Cleaning previous build..."
-    rm -rf build install log
-fi
-colcon build --symlink-install
-source install/setup.bash
-cd ../..
+# print_status "Building FAST-LIO ROS2..."
+# cd third_party/FAST_LIO_ROS2
+# if [ -d "build" ] || [ -d "install" ]; then
+#     print_warning "Cleaning previous build..."
+#     rm -rf build install log
+# fi
+# colcon build --symlink-install
+# source install/setup.bash
+# cd ../..
 
 # Build main localization package
 print_status "Building main localization package..."

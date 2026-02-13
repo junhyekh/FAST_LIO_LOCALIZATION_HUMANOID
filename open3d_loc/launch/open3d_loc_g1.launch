@@ -10,7 +10,7 @@
 	<node pkg="open3d_loc" type="global_localization_node"  name="global_localization_node" output="screen">
 
 		<rosparam command="load" file="$(find open3d_loc)/config/loc_param_g1.yaml" />
-		<param name="path_map" type="string" value="$(find open3d_loc)/../data/map.ply" />
+		<param name="path_map" type="string" value="/root/GP/map_build/0212_align.pcd" />
 
 		<param name="pcd_queue_maxsize" type="int" value="10" />
 		<param name="voxelsize_coarse" type="double" value="0.15" />

@@ -16,7 +16,9 @@
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <std_msgs/msg/float32.hpp>
 
-#include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
+#include <tf2_geometry_msgs/tf2_geometry_msgs.h>
+#include <sstream>
+#include <iomanip>
 
 #include <Eigen/Core>
 #include <Eigen/Dense>
@@ -413,7 +415,7 @@ GlobalLocalization::GlobalLocalization() : Node("global_localization_node")
     
     // Subscribe to FAST-LIO odometry output
     sub_baselink2odom_ = this->create_subscription<nav_msgs::msg::Odometry>(
-        "/Odometry", 10, std::bind(&GlobalLocalization::CallbackBaselink2Odom, this, std::placeholders::_1));
+        "/Odometry_LIO", 10, std::bind(&GlobalLocalization::CallbackBaselink2Odom, this, std::placeholders::_1));
     
     // Subscribe to registered point cloud from FAST-LIO
     sub_scan_cur_ = this->create_subscription<sensor_msgs::msg::PointCloud2>(
