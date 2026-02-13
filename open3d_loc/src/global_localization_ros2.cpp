@@ -619,11 +619,26 @@ void GlobalLocalization::LocalizationInitialize()
         // Phase 1: FPFH global alignment (repeat until convergence)
         // Uses full map (pcd_map_coarse_) and full scan — no OBB crop,
         // so it works independently of initial pose estimate.
+        // After FPFH, we evaluate with EvaluateRegistration (scan vs local
+        // map crop around the FPFH result) for a meaningful fitness score.
         // ================================================================
         RCLCPP_INFO(this->get_logger(), "=== Phase 1: FPFH global alignment ===");
         bool fpfh_converged = false;
         int fpfh_trial = 0;
+        double best_fpfh_fitness = 0.0;
+        Eigen::Matrix4d best_fpfh_matrix = mat_odom2map_;
         auto t_fpfh_start = std::chrono::high_resolution_clock::now();
+
+        // Pre-compute target FPFH features once (expensive, so do it outside the loop)
+        double fpfh_voxel = voxelsize_coarse_;
+        auto tgt_down = pcd_map_coarse_;  // already downsampled at voxelsize_coarse_
+        if (!tgt_down->HasNormals()) {
+            tgt_down->EstimateNormals(open3d::geometry::KDTreeSearchParamHybrid(fpfh_voxel * 2.0, 30));
+        }
+        RCLCPP_INFO(this->get_logger(), "Computing target FPFH features (map: %zu pts, voxel: %.3f)...", tgt_down->points_.size(), fpfh_voxel);
+        auto tgt_fpfh = open3d::pipelines::registration::ComputeFPFHFeature(
+            *tgt_down, open3d::geometry::KDTreeSearchParamHybrid(fpfh_voxel * 5.0, 100));
+        RCLCPP_INFO(this->get_logger(), "Target FPFH features computed.");
 
         while (rclcpp::ok() && !fpfh_converged) {
             // Timeout guard for FPFH phase
@@ -633,9 +648,14 @@ void GlobalLocalization::LocalizationInitialize()
                 if (fpfh_trial < num_trial_init_) {
                     fpfh_trial += 1;
                     t_fpfh_start = std::chrono::high_resolution_clock::now();
-                    RCLCPP_WARN(this->get_logger(), "FPFH timeout (%.1fs). Retrying trial %d / %d", elapsed_s, fpfh_trial, num_trial_init_);
+                    RCLCPP_WARN(this->get_logger(), "FPFH timeout (%.1fs). Retrying trial %d / %d (best fitness so far: %.3f)",
+                                elapsed_s, fpfh_trial, num_trial_init_, best_fpfh_fitness);
                 } else {
-                    RCLCPP_WARN(this->get_logger(), "FPFH failed after %d trials. Proceeding to ICP with current estimate.", fpfh_trial);
+                    RCLCPP_WARN(this->get_logger(), "FPFH failed after %d trials (best fitness: %.3f). Proceeding to ICP.", fpfh_trial, best_fpfh_fitness);
+                    {
+                        std::lock_guard<std::mutex> lk(lock_mat_odom2map_);
+                        mat_odom2map_ = best_fpfh_matrix;
+                    }
                     break;
                 }
             }
@@ -651,52 +671,82 @@ void GlobalLocalization::LocalizationInitialize()
             *pcd_scan = *pcd_scan_cur_;
             lock_scan_.unlock();
 
-            // source = full scan (downsample for speed)
+            // source = full scan (downsample for FPFH)
             auto fpfh_source = pcd_scan;
             if (fpfh_source->points_.size() > static_cast<size_t>(maxpoints_source_)) {
                 fpfh_source = fpfh_source->RandomDownSample(double(maxpoints_source_) / fpfh_source->points_.size());
             }
-            // target = full coarse map (already downsampled with voxelsize_coarse_)
-            auto fpfh_target = pcd_map_coarse_;
 
-            if (fpfh_source->points_.empty() || fpfh_target->points_.empty()) {
-                RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
-                    "FPFH skipped: empty source (%zu) or target (%zu)", fpfh_source->points_.size(), fpfh_target->points_.size());
+            if (fpfh_source->points_.empty()) {
+                RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000, "FPFH skipped: empty source");
                 continue;
             }
 
-            // FPFH+RANSAC: source (odom frame) → target (map frame), no initial guess needed
+            // Publish current scan and map for RViz visibility during FPFH phase
+            {
+                sensor_msgs::msg::PointCloud2 scan_msg;
+                open3d_conversions::open3dToRos(*fpfh_source, scan_msg, "camera_init");
+                scan_msg.header.stamp = this->now();
+                pub_scan_->publish(scan_msg);
+            }
+
+            // FPFH+RANSAC: source (odom frame) → target (map frame)
             try {
-                double fpfh_voxel = voxelsize_coarse_;
                 auto src_down = fpfh_source->VoxelDownSample(fpfh_voxel);
-                auto tgt_down = fpfh_target;  // already downsampled at voxelsize_coarse_
                 src_down->EstimateNormals(open3d::geometry::KDTreeSearchParamHybrid(fpfh_voxel * 2.0, 30));
-                // tgt normals already estimated during map loading, but re-check
-                if (!tgt_down->HasNormals()) {
-                    tgt_down->EstimateNormals(open3d::geometry::KDTreeSearchParamHybrid(fpfh_voxel * 2.0, 30));
-                }
                 auto src_fpfh = open3d::pipelines::registration::ComputeFPFHFeature(
                     *src_down, open3d::geometry::KDTreeSearchParamHybrid(fpfh_voxel * 5.0, 100));
-                auto tgt_fpfh = open3d::pipelines::registration::ComputeFPFHFeature(
-                    *tgt_down, open3d::geometry::KDTreeSearchParamHybrid(fpfh_voxel * 5.0, 100));
                 auto fpfh_result = pcd_tools::RegistrationFpfh(src_down, tgt_down, src_fpfh, tgt_fpfh, fpfh_voxel, true);
 
-                RCLCPP_INFO(this->get_logger(), "FPFH result: fitness %.3f, RMSE %.4f",
-                            fpfh_result.fitness_, fpfh_result.inlier_rmse_);
+                // FPFH fitness is unreliable (scan << map size).
+                // Instead, evaluate the result by transforming source and checking
+                // overlap against a LOCAL crop of the fine map around the FPFH result position.
+                Eigen::Matrix4d T_fpfh = fpfh_result.transformation_;
+                Eigen::Vector3d fpfh_position = T_fpfh.block<3,1>(0,3);
 
-                if (fpfh_result.fitness_ > threshold_fitness_init_) {
-                    std::lock_guard<std::mutex> lk(lock_mat_odom2map_);
-                    mat_odom2map_ = fpfh_result.transformation_;
-                    fpfh_converged = true;
-                    RCLCPP_INFO(this->get_logger(), "FPFH converged (fitness %.3f). Moving to Phase 2.", fpfh_result.fitness_);
+                auto eval_obb = std::make_shared<open3d::geometry::OrientedBoundingBox>();
+                eval_obb->center_ = fpfh_position;
+                eval_obb->R_ = T_fpfh.block<3,3>(0,0);
+                eval_obb->extent_ = Eigen::Vector3d(60, 60, 40);
+                auto local_map = pcd_map_fine_->Crop(*eval_obb);
+
+                if (!local_map->IsEmpty()) {
+                    auto eva = open3d::pipelines::registration::EvaluateRegistration(
+                        *fpfh_source, *local_map, std::max(1e-3, voxelsize_fine_ * 3), T_fpfh);
+                    double eval_fitness = eva.fitness_;
+
+                    RCLCPP_INFO(this->get_logger(), "FPFH: RANSAC fitness %.3f → Eval fitness %.3f (local map %zu pts)",
+                                fpfh_result.fitness_, eval_fitness, local_map->points_.size());
 
                     // Publish FPFH result for visualization
                     auto source_vis = std::make_shared<open3d::geometry::PointCloud>(*fpfh_source);
-                    source_vis->Transform(fpfh_result.transformation_);
+                    source_vis->Transform(T_fpfh);
                     sensor_msgs::msg::PointCloud2 source_msg;
                     open3d_conversions::open3dToRos(*source_vis, source_msg, "map");
                     source_msg.header.stamp = this->now();
                     pub_scan2map_->publish(source_msg);
+
+                    // Publish local map crop as submap
+                    sensor_msgs::msg::PointCloud2 submap_msg;
+                    open3d_conversions::open3dToRos(*local_map, submap_msg, "map");
+                    submap_msg.header.stamp = this->now();
+                    pub_submap_->publish(submap_msg);
+
+                    // Track best result
+                    if (eval_fitness > best_fpfh_fitness) {
+                        best_fpfh_fitness = eval_fitness;
+                        best_fpfh_matrix = T_fpfh;
+                    }
+
+                    if (eval_fitness > threshold_fitness_init_) {
+                        std::lock_guard<std::mutex> lk(lock_mat_odom2map_);
+                        mat_odom2map_ = T_fpfh;
+                        fpfh_converged = true;
+                        RCLCPP_INFO(this->get_logger(), "FPFH converged (eval fitness %.3f). Moving to Phase 2.", eval_fitness);
+                    }
+                } else {
+                    RCLCPP_WARN(this->get_logger(), "FPFH result position (%.1f, %.1f, %.1f) outside map bounds",
+                                fpfh_position.x(), fpfh_position.y(), fpfh_position.z());
                 }
             } catch (const std::exception &e) {
                 RCLCPP_WARN(this->get_logger(), "FPFH failed: %s", e.what());
