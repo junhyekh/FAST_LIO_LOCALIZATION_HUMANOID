@@ -699,43 +699,44 @@ void GlobalLocalization::LocalizationInitialize()
                 auto fpfh_result = pcd_tools::RegistrationFpfh(src_down, tgt_down, src_fpfh, tgt_fpfh, fpfh_voxel, true);
 
                 // FPFH fitness is unreliable (scan << map size).
-                // Constrain pitch/roll: humanoid robot stands upright, so pitch/roll
-                // should be close to odom values. If FPFH result deviates > ±5°,
-                // replace with odom pitch/roll and keep FPFH's yaw/x/y/z.
+                // Constrain pitch/roll: the odom→map transform's pitch/roll should be
+                // close to the known initialpose values (e.g., roll=-180° for flipped IMU).
+                // FPFH searches 6DoF freely, so we correct pitch/roll if they deviate
+                // more than ±5° from the reference (initialpose param).
                 Eigen::Matrix4d T_fpfh = fpfh_result.transformation_;
                 {
-                    // Extract FPFH euler angles (ZYX convention: yaw, pitch, roll)
-                    Eigen::Vector3d euler_fpfh = T_fpfh.block<3,3>(0,0).eulerAngles(2, 1, 0); // [yaw, pitch, roll]
-                    // Extract odom euler angles for reference pitch/roll
-                    Eigen::Vector3d euler_odom = mat_baselink2odom_.block<3,3>(0,0).eulerAngles(2, 1, 0);
+                    // Reference pitch/roll from initialpose parameter (e.g., roll=-180°, pitch=0°)
+                    Eigen::Vector3d euler_ref = mat_initialpose_.block<3,3>(0,0).eulerAngles(2, 1, 0); // [yaw, pitch, roll]
+                    double pitch_ref = euler_ref[1];
+                    double roll_ref = euler_ref[2];
 
+                    // Extract FPFH euler angles (ZYX convention: yaw, pitch, roll)
+                    Eigen::Vector3d euler_fpfh = T_fpfh.block<3,3>(0,0).eulerAngles(2, 1, 0);
+                    double yaw_fpfh = euler_fpfh[0];
                     double pitch_fpfh = euler_fpfh[1];
                     double roll_fpfh = euler_fpfh[2];
-                    double pitch_odom = euler_odom[1];
-                    double roll_odom = euler_odom[2];
 
-                    // Normalize angles to [-pi, pi]
+                    // Normalize angle difference to [-pi, pi]
                     auto normalize = [](double a) -> double {
                         while (a > M_PI) a -= 2.0 * M_PI;
                         while (a < -M_PI) a += 2.0 * M_PI;
                         return a;
                     };
-                    double pitch_diff = std::abs(normalize(pitch_fpfh - pitch_odom));
-                    double roll_diff = std::abs(normalize(roll_fpfh - roll_odom));
+                    double pitch_diff = std::abs(normalize(pitch_fpfh - pitch_ref));
+                    double roll_diff = std::abs(normalize(roll_fpfh - roll_ref));
                     constexpr double max_tilt_rad = 5.0 * M_PI / 180.0; // ±5°
 
                     if (pitch_diff > max_tilt_rad || roll_diff > max_tilt_rad) {
-                        // Reconstruct rotation: keep FPFH yaw, use odom pitch/roll
-                        double yaw_fpfh = euler_fpfh[0];
+                        // Reconstruct rotation: keep FPFH yaw, use reference pitch/roll
                         Eigen::Matrix3d R_corrected =
                             (Eigen::AngleAxisd(yaw_fpfh, Eigen::Vector3d::UnitZ()) *
-                             Eigen::AngleAxisd(pitch_odom, Eigen::Vector3d::UnitY()) *
-                             Eigen::AngleAxisd(roll_odom, Eigen::Vector3d::UnitX())).toRotationMatrix();
+                             Eigen::AngleAxisd(pitch_ref, Eigen::Vector3d::UnitY()) *
+                             Eigen::AngleAxisd(roll_ref, Eigen::Vector3d::UnitX())).toRotationMatrix();
                         T_fpfh.block<3,3>(0,0) = R_corrected;
                         RCLCPP_INFO(this->get_logger(),
                             "FPFH pitch/roll corrected: pitch %.1f°→%.1f°, roll %.1f°→%.1f° (yaw %.1f° kept)",
-                            pitch_fpfh * 180.0 / M_PI, pitch_odom * 180.0 / M_PI,
-                            roll_fpfh * 180.0 / M_PI, roll_odom * 180.0 / M_PI,
+                            pitch_fpfh * 180.0 / M_PI, pitch_ref * 180.0 / M_PI,
+                            roll_fpfh * 180.0 / M_PI, roll_ref * 180.0 / M_PI,
                             yaw_fpfh * 180.0 / M_PI);
                     }
                 }
