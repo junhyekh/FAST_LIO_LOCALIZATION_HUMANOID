@@ -670,7 +670,7 @@ void GlobalLocalization::LocalizationInitialize()
                 // source_msg.header.frame_id = "camera_init";
                 // pub_scan_->publish(source_msg);
 
-                // Apply current transform, then multiscale ICP
+                // Apply current transform, then FPFH coarse + multiscale ICP
                 source->Transform(reg_matrix);
                 *pcd_scan2map = *source;
 
@@ -678,6 +678,33 @@ void GlobalLocalization::LocalizationInitialize()
                 open3d_conversions::open3dToRos(*source, source_msg, "map");
                 source_msg.header.stamp = this->now();
                 pub_scan2map_->publish(source_msg);
+
+                // --- FPFH coarse alignment ---
+                try {
+                    double fpfh_voxel = voxelsize_fine_ * 2.0;
+                    auto src_down = source->VoxelDownSample(fpfh_voxel);
+                    auto tgt_down = target->VoxelDownSample(fpfh_voxel);
+                    src_down->EstimateNormals(open3d::geometry::KDTreeSearchParamHybrid(fpfh_voxel * 2.0, 30));
+                    tgt_down->EstimateNormals(open3d::geometry::KDTreeSearchParamHybrid(fpfh_voxel * 2.0, 30));
+                    auto src_fpfh = open3d::pipelines::registration::ComputeFPFHFeature(
+                        *src_down, open3d::geometry::KDTreeSearchParamHybrid(fpfh_voxel * 5.0, 100));
+                    auto tgt_fpfh = open3d::pipelines::registration::ComputeFPFHFeature(
+                        *tgt_down, open3d::geometry::KDTreeSearchParamHybrid(fpfh_voxel * 5.0, 100));
+                    auto fpfh_result = pcd_tools::RegistrationFpfh(src_down, tgt_down, src_fpfh, tgt_fpfh, fpfh_voxel, true);
+                    if (fpfh_result.fitness_ > 0.1) {
+                        // Apply FPFH coarse transform
+                        reg_matrix = fpfh_result.transformation_ * reg_matrix;
+                        source->Transform(fpfh_result.transformation_);
+                        RCLCPP_INFO(this->get_logger(), "FPFH coarse alignment: fitness %.3f, RMSE %.4f",
+                                    fpfh_result.fitness_, fpfh_result.inlier_rmse_);
+                    } else {
+                        RCLCPP_WARN(this->get_logger(), "FPFH coarse alignment poor (fitness %.3f), skipping", fpfh_result.fitness_);
+                    }
+                } catch (const std::exception &e) {
+                    RCLCPP_WARN(this->get_logger(), "FPFH coarse alignment failed: %s. Proceeding with ICP only.", e.what());
+                }
+
+                // --- MultiScale ICP fine alignment ---
                 try {
                     auto multiScale_reg_matrix = pcd_tools::RegistrationMultiScaleIcp(source, target, voxelsize_fine_, 1, voxel_scales_, true);
                     reg_matrix = multiScale_reg_matrix * reg_matrix;
