@@ -589,16 +589,6 @@ void GlobalLocalization::LocalizationInitialize()
                 if (num_trial < num_trial_init_) {
                     num_trial += 1;
                     t_start = std::chrono::high_resolution_clock::now();
-                    // apply random yaw rotation to the current odom2map
-                    Eigen::Matrix4d random_matrix = Eigen::Matrix4d::Identity();
-                    // Sample random yaw in [0, pi)
-                    double random_yaw = static_cast<double>(rand()) / static_cast<double>(RAND_MAX) * M_PI;
-                    RCLCPP_WARN(this->get_logger(), "random_yaw: %.3f on num trial %d", random_yaw, num_trial);
-                    random_matrix.block<3,3>(0,0) = Eigen::AngleAxisd(random_yaw, Eigen::Vector3d::UnitZ()).toRotationMatrix();
-                    {
-                        std::lock_guard<std::mutex> lk(lock_mat_odom2map_);
-                        mat_odom2map_ = random_matrix * mat_odom2map_;
-                    }
                 } else {
                     RCLCPP_WARN(this->get_logger(), "Initial localization failed with num_trial %d (fitness %.3f).", num_trial, best_fitness);
                     {
@@ -921,11 +911,13 @@ void GlobalLocalization::CallbackScan(const sensor_msgs::msg::PointCloud2::Share
 void GlobalLocalization::CallbackInitialPose(const geometry_msgs::msg::PoseWithCovarianceStamped::SharedPtr initialpose)
 {
     if (!(loc_initialized_ && loc_fitness_ > 0.99)) {
-        Eigen::Quaterniond rq(
+        Eigen::Quaterniond q_init(
             initialpose->pose.pose.orientation.w,
             initialpose->pose.pose.orientation.x,
             initialpose->pose.pose.orientation.y,
             initialpose->pose.pose.orientation.z);
+        Eigen::Quaterniond q_roll_180(0, 1, 0, 0);
+        Eigen::Quaterniond rq = q_roll_180 * q_init;
         mat_initialpose_.setIdentity();
         mat_initialpose_.block<3,3>(0,0) = rq.toRotationMatrix();
         mat_initialpose_.block<3,1>(0,3) = Eigen::Vector3d(
