@@ -16,9 +16,12 @@ class Args:
     num_iterations: int = 1000
     probability: float = 0.999999
 
+    output_path: str = "" # path to save the aligned point cloud (e.g. data/map_aligned.ply). Empty = no save.
+
     test: bool = False
 
     align: bool = True # align the point cloud plane to point z direction (0, 0, 1)
+    flip_z: bool = False # flip z-axis (180° rotation around X-axis) after ground alignment
 
 def to_numpy(pcd: o3d.geometry.PointCloud):
     points = np.asarray(pcd.points)
@@ -76,10 +79,41 @@ def main(args: Args):
 
     if args.align:
         pcd_algined = pcd_src.transform(T)
+
+        # Track the total transform applied to the point cloud
+        T_total = T.copy()
+
+        # Optional: flip Z-axis (180° rotation around X-axis)
+        if args.flip_z:
+            T_flip = np.eye(4)
+            T_flip[1, 1] = -1.0  # y -> -y
+            T_flip[2, 2] = -1.0  # z -> -z
+            pcd_algined = pcd_algined.transform(T_flip)
+            T_total = T_flip @ T_total
+            print("Applied Z-axis flip (180° rotation around X-axis)")
+
+        # Transform the original start point (0,0,0) with the same transform
+        origin_old = np.array([0.0, 0.0, 0.0, 1.0])
+        origin_new = T_total @ origin_old
+        print(f"\n=== Start Point (FAST-LIO origin) ===")
+        print(f"  Before: [0.0, 0.0, 0.0]")
+        print(f"  After:  [{origin_new[0]:.4f}, {origin_new[1]:.4f}, {origin_new[2]:.4f}]")
+        print(f"  Total transform (4x4):\n{T_total}\n")
+
         pcd_algined_ground = pcd_algined.select_by_index(inliers)
         pcd_algined_ground.paint_uniform_color([1, 0, 0])
         pcd_algined_coarse = o3d.geometry.PointCloud(pcd_algined)
         pcd_algined_coarse = pcd_algined_coarse.voxel_down_sample(voxel_size=0.1)
+
+        # Save aligned point cloud if output_path is specified
+        if args.output_path:
+            output = Path(args.output_path)
+            output.parent.mkdir(parents=True, exist_ok=True)
+            o3d.io.write_point_cloud(str(output), pcd_algined)
+            print(f"Saved aligned point cloud to: {output}")
+            print(f"NOTE: The FAST-LIO start point is now at "
+                  f"[{origin_new[0]:.4f}, {origin_new[1]:.4f}, {origin_new[2]:.4f}] "
+                  f"in the new map coordinates.")
 
     plane_model, inliers = pcd_algined.segment_plane(distance_threshold=args.distance_threshold,
                                                 ransac_n=args.ransac_n,
